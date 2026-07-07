@@ -147,6 +147,12 @@ url = {https://github.com/sharadgupta27/paracuda}
 }
 ```
 
+## Acknowledgement
+
+This software is based on the **Paracuda II** tool:
+
+> Carmon, N., & Ben-Dor, E. (2017). An advanced analytical approach for spectral-based modelling of soil properties. *International Journal of Emerging Technologies and Advanced Engineering*, 7, 90–97.
+
 ## Commercial Use
 
 For commercial licensing inquiries, please contact: sharadgupta27@gmail.com
