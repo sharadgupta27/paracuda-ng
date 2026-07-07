@@ -1,13 +1,13 @@
 # Paracuda III
 
 Paracuda is an open-source tool for analyzing spectral data and building, validating,
-and applying machine-learning prediction models — designed for soil spectroscopy and
+and applying machine-learning prediction models - designed for soil spectroscopy and
 hyperspectral remote sensing, but usable for any tabular spectral dataset.
 
 The interface is organized as a **7-step wizard** (Data → Configuration → Preprocess →
 Model → Validate → Execution → Apply) with a live *Model Development Flow* diagram, so a
-complete workflow — from loading spectra to applying a trained model on a hyperspectral
-image — can be run without writing any code.
+complete workflow - from loading spectra to applying a trained model on a hyperspectral
+image - can be run without writing any code.
 
 ![Paracuda III main window](screenshot_paracuda.png)
 
@@ -25,7 +25,7 @@ image — can be run without writing any code.
 - **Preprocessing**: Continuum Removal, First Derivative, Second Derivative, Absorbance
   (plus optional PCA dimensionality reduction in the model pipeline)
 - **Band resampling (7 methods)**: Linear, Nearest-Neighbour, Quadratic and Cubic-Spline
-  interpolation, Gaussian SRF convolution, Empirical SRF integration, and Band Averaging —
+  interpolation, Gaussian SRF convolution, Empirical SRF integration, and Band Averaging -
   for harmonizing spectra to a target sensor's band configuration
 - **Wavelength exclusion**: drop noisy regions with custom ranges or one-click presets
   (water-absorption bands, noisy detector edges)
@@ -53,7 +53,7 @@ image — can be run without writing any code.
 ### Apply to Images
 - **Hyperspectral image prediction**: apply a trained model across a full image cube
 - **Multi-format geospatial I/O**: GeoTIFF/TIFF, ENVI (`.dat`/`.bil`/`.bip`/`.bsq` + `.hdr`),
-  ERDAS Imagine (`.img`), NITF, and PCIDSK — wavelengths/FWHM are recovered from ENVI headers,
+  ERDAS Imagine (`.img`), NITF, and PCIDSK - wavelengths/FWHM are recovered from ENVI headers,
   and predictions are written back in the same format with georeferencing preserved
 - **Robust handling**: automatic gain/offset scaling, background/no-data and bad-band masking,
   and memory-safe chunked processing for large scenes
@@ -70,7 +70,7 @@ image — can be run without writing any code.
 
 Not every instrument exports data in the layout Paracuda expects. The **Paracuda Data
 Converter** (Tools → Data Converter, or run `utils/data_converter.py`) is a three-step
-wizard — *Load Data → Configure → Preview & Export* — that auto-detects the layout of an
+wizard - *Load Data → Configure → Preview & Export* - that auto-detects the layout of an
 arbitrary Excel/CSV file and converts it to the standard
 `Names | Prop1 … PropN | WL1 … WLM` format.
 
@@ -93,7 +93,7 @@ Paracuda III is organized into focused packages:
 ## Quick Start (One-Click Launcher)
 
 If you're not comfortable installing packages or running scripts from a terminal, just
-use the included launcher — **double-click `run_paracuda.bat`**. It automatically:
+use the included launcher - **double-click `run_paracuda.bat`**. It automatically:
 
 1. Finds your Conda installation (Miniforge, Miniconda, or Anaconda)
 2. Creates the `emit` environment and installs everything from `requirements.txt` the
@@ -122,12 +122,12 @@ python paracuda.py
 
 A typical batch workflow:
 
-1. **Data** — load spectral data and select one or more soil properties
-2. **Configuration / Preprocess** — choose resampling, exclusions, and preprocessing
-3. **Model / Validate** — pick single or multiple models and a cross-validation strategy
-4. **Execution** — run the analysis to get an Excel report, PDF plots, and best-model
+1. **Data** - load spectral data and select one or more soil properties
+2. **Configuration / Preprocess** - choose resampling, exclusions, and preprocessing
+3. **Model / Validate** - pick single or multiple models and a cross-validation strategy
+4. **Execution** - run the analysis to get an Excel report, PDF plots, and best-model
    recommendations, then save the trained model
-5. **Apply** — load a hyperspectral image or new dataset and predict with the saved model
+5. **Apply** - load a hyperspectral image or new dataset and predict with the saved model
 
 ## License
 
