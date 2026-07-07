@@ -3,8 +3,14 @@ pandas
 scikit-learn
 matplotlib
 rasterio
+spectral
 joblib
 scipy
 pyinstaller
 reportlab
 pillow
+xgboost
+optuna
+openpyxl
+xlrd
+odfpy

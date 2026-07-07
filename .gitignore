@@ -1,0 +1,66 @@
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+*.manifest
+
+# Packaging / distribution
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Test / coverage / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# LaTeX build artifacts (paper/abstract sources)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+
+# IDE / editor
+.idea/
+*.swp
+*.swo
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Paracuda runtime outputs (trained models & generated reports)
+# NOTE: generated .xlsx (e.g. *_paracuda.xlsx, *_predicted_*.xlsx) are intentionally
+# NOT ignored here because curated samples in "Sample Data/" share those names.
+*.joblib
+*.pkl
+*_plots.pdf
+*_batch_results.pdf
