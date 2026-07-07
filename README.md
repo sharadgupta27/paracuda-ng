@@ -96,9 +96,9 @@ If you're not comfortable installing packages or running scripts from a terminal
 use the included launcher - **double-click `run_paracuda.bat`**. It automatically:
 
 1. Finds your Conda installation (Miniforge, Miniconda, or Anaconda)
-2. Creates the `emit` environment and installs everything from `requirements.txt` the
+2. Creates the `paracuda` environment and installs everything from `requirements.txt` the
    first time you run it (this one-time setup takes a few minutes)
-3. Activates the `emit` environment and launches Paracuda III
+3. Activates the `paracuda` environment and launches Paracuda III
 
 The only prerequisite is a Conda installation (Miniforge, Miniconda, or Anaconda). If
 Conda can't be found, or setup fails, the launcher prints clear guidance and stays open
