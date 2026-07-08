@@ -17,9 +17,9 @@ image - can be run without writing any code.
 - **Flexible input**: load spectral data from Excel (`.xlsx`, `.xls`, `.ods`) or CSV
 - **Data Converter**: a built-in wizard that auto-detects arbitrary instrument layouts
   (row-wise or transposed/column-wise), handles `nm`/`µm` units, optionally merges a
-  separate soil-properties file, and exports to the Paracuda-compatible format
+  separate target properties (soil/vegetation) file, and exports to the Paracuda-compatible format
 - **Data checks & statistics**: inspect loaded data and export summary statistics
-- **Multi-property selection**: analyze several soil properties in a single run
+- **Multi-property selection**: analyze several properties in a single run
 
 ### Spectral Processing
 - **Preprocessing**: Continuum Removal, First Derivative, Second Derivative, Absorbance
@@ -122,7 +122,7 @@ python paracuda.py
 
 A typical batch workflow:
 
-1. **Data** - load spectral data and select one or more soil properties
+1. **Data** - load spectral data and select one or more properties
 2. **Configuration / Preprocess** - choose resampling, exclusions, and preprocessing
 3. **Model / Validate** - pick single or multiple models and a cross-validation strategy
 4. **Execution** - run the analysis to get an Excel report, PDF plots, and best-model
