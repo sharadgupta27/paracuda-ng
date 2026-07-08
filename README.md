@@ -1,7 +1,7 @@
 # Paracuda III
 
 Paracuda is an open-source tool for analyzing spectral data and building, validating,
-and applying machine-learning prediction models - designed for soil spectroscopy and
+and applying machine-learning prediction models - designed for spectroscopy and
 hyperspectral remote sensing, but usable for any tabular spectral dataset.
 
 The interface is organized as a **7-step wizard** (Data → Configuration → Preprocess →
