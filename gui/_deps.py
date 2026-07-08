@@ -68,6 +68,7 @@ from preprocessing.data_processing import (safe_interpolate_spectra, preprocess_
                               spectral_transfer_function, SENSOR_OPTIONS,
                               resample_spectra, analyze_missing_data,
                               handle_missing_data, MISSING_DATA_METHODS,
+                              remove_target_outliers, TARGET_OUTLIER_METHODS,
                               RESAMPLE_METHODS, normalize_resample_method,
                               estimate_fwhms_from_grid,
                               get_sensor_bands, load_fwhm_csv, load_srf_csv,

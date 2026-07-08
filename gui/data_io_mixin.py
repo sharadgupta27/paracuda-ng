@@ -1326,3 +1326,43 @@ class DataIOMixin:
             self.status_text.insert(tk.END, f"  ↳ {info['message']}\n")
             self.status_text.see(tk.END)
         return X_clean, y_clean, info
+
+    def _apply_target_outlier_removal(self, X, y, property_name=None):
+        """Drop samples whose target value ``y`` is an outlier, if the
+        'Target Variable Outlier Removal' checkbox is enabled.
+
+        The selected property (e.g. clay %) is the target variable: samples whose
+        value is a z-score / IQR outlier are removed together with their paired
+        spectra (``X``).  Returns the possibly-reduced ``(X, y)`` unchanged when
+        the option is off or no samples qualify.  Logs a one-line summary.
+        """
+        if not getattr(self, 'target_outlier_var', None) or not self.target_outlier_var.get():
+            return X, y
+
+        method = (self.target_outlier_method_var.get()
+                  if hasattr(self, 'target_outlier_method_var')
+                  else TARGET_OUTLIER_METHODS[0])
+        try:
+            threshold = float(self.target_outlier_threshold_var.get())
+        except (ValueError, tk.TclError):
+            threshold = 2.5
+
+        keep = remove_target_outliers(y, method=method, threshold=threshold)
+        n_removed = int((~keep).sum())
+        if n_removed and int(keep.sum()) >= 2:
+            X, y = X[keep], y[keep]
+            label = property_name or getattr(self, 'selected_property', None) or "target"
+            self.status_text.insert(
+                tk.END,
+                f"  ↳ Target outlier removal [{label}]: removed {n_removed} "
+                f"sample(s) ({method}, threshold={threshold:g}). "
+                f"{int(keep.sum())} remaining.\n")
+            self.status_text.see(tk.END)
+        elif n_removed:
+            # Would leave <2 samples — skip rather than break training.
+            self.status_text.insert(
+                tk.END,
+                f"  ↳ Target outlier removal skipped: would leave too few "
+                f"samples ({int(keep.sum())}).\n")
+            self.status_text.see(tk.END)
+        return X, y

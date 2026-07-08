@@ -872,6 +872,10 @@ class AnalysisMixin:
             # Guard: replace any NaN/Inf produced by preprocessing
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
+            # Target-variable outlier removal (drop samples whose property value
+            # is an outlier) — runs on y and its paired spectra before the split.
+            X, y = self._apply_target_outlier_removal(X, y, property_name=property_name)
+
             # Split data
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
             
@@ -1502,11 +1506,16 @@ class AnalysisMixin:
                     f"variance after preprocessing. Consider a different preprocessing method.\n")
                 self.status_text.see(tk.END)
 
+            # Target-variable outlier removal (drop samples whose selected
+            # property value is an outlier) — runs on y and its paired spectra
+            # before the split.
+            X, y = self._apply_target_outlier_removal(X, y, property_name=self.selected_property)
+
             self.update_progress(30, "Splitting data...")
-            
+
             # Split data
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
-            
+
             self.update_progress(40, "Scaling data...")
             
             # Scale data

@@ -371,6 +371,76 @@ def handle_missing_data(X, y, method="Drop rows with missing"):
     return X, y, info
 
 
+# ---------------------------------------------------------------------------
+# Target-variable outlier removal
+# ---------------------------------------------------------------------------
+#
+# Distinct from "Spectral Outlier Removal" (which flags samples whose *spectra*
+# are anomalous): this removes samples whose *target property* value (e.g. the
+# selected soil property such as clay %) is a statistical outlier.  Extreme
+# target values exert disproportionate leverage on a regression fit, so dropping
+# them before training often yields a more robust model.  Two selectable
+# criteria mirror the reference DataPreprocessor implementation:
+#
+#   * "zscore" – drop samples whose target is more than ``threshold`` standard
+#                deviations from the mean.
+#   * "iqr"    – drop samples outside [Q1 - k·IQR, Q3 + k·IQR] where k = threshold.
+
+# GUI dropdown order; the first entry is the default.
+TARGET_OUTLIER_METHODS = ["zscore", "iqr"]
+
+
+def remove_target_outliers(y, method="zscore", threshold=2.5):
+    """Return a boolean keep-mask flagging non-outlier samples by target value.
+
+    Parameters
+    ----------
+    y : array-like (n_samples,)
+        Target property values (e.g. clay content) for each sample.
+    method : {"zscore", "iqr"}
+        "zscore" uses a standard-score cut-off; "iqr" uses the Tukey fence.
+    threshold : float
+        z-score cut-off (``zscore``) or IQR multiplier ``k`` (``iqr``).
+
+    Returns
+    -------
+    keep : ndarray[bool] (n_samples,)
+        ``True`` where the sample is an inlier (kept), ``False`` for outliers.
+
+    Notes
+    -----
+    Degenerate inputs (fewer than 3 finite targets, or zero spread) return an
+    all-``True`` mask so the caller never accidentally discards every sample.
+    Non-finite targets are always kept here (missing-target rows are handled by
+    :func:`handle_missing_data`, which runs earlier in the pipeline).
+    """
+    y = np.asarray(y, dtype=float).ravel()
+    keep = np.ones(y.shape[0], dtype=bool)
+    finite = np.isfinite(y)
+    if int(finite.sum()) < 3:
+        return keep
+
+    m = str(method).strip().lower()
+    if m == "iqr":
+        Q1 = np.percentile(y[finite], 25)
+        Q3 = np.percentile(y[finite], 75)
+        IQR = Q3 - Q1
+        if IQR <= 0:
+            return keep
+        lower = Q1 - threshold * IQR
+        upper = Q3 + threshold * IQR
+        inside = (y >= lower) & (y <= upper)
+    else:  # zscore (default)
+        mu = np.mean(y[finite])
+        sd = np.std(y[finite])
+        if sd <= 0:
+            return keep
+        inside = (np.abs(y - mu) / sd) <= threshold
+
+    # Keep inliers, and never drop a non-finite target here (handled elsewhere).
+    return inside | ~finite
+
+
 def preprocess_spectra(spectra, method, **kwargs):
     """
     Apply preprocessing to spectral data
@@ -554,8 +624,8 @@ def calculate_statistics(data):
 
 # Sentinel-2A MSI reflective band centres (B1-B9, B11, B12) and their published
 # FWHM bandwidths (nm). Sentinel-2 has no thermal channels.
-_S2_REFLECTIVE = [443, 490, 560, 665, 705, 740, 783, 842, 865, 945, 1610, 2190]
-_S2_FWHM       = [ 20,  65,  35,  30,  15,  15,  20, 115,  20,  20,   90,  180]
+_S2_REFLECTIVE = [490, 560, 665, 705, 740, 783, 842, 865, 1610, 2190]
+_S2_FWHM       = [ 65,  35,  30,  15,  15,  20, 115,  20,  90,  180]
 
 # Landsat-8 OLI reflective band centres (coastal, blue, green, red, NIR,
 # SWIR-1, SWIR-2) with FWHM, and TIRS thermal band centres (B10, B11) with FWHM.

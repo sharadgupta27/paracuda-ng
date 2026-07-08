@@ -184,6 +184,41 @@ class LayoutMixin:
             font=('Helvetica', 8), foreground="#b06000")
         self.missing_data_label.pack(anchor="w", pady=(0, 2))
 
+        # ── Target-variable outlier removal ───────────────────────────────────
+        # Drop samples whose SELECTED PROPERTY value (e.g. clay %) is a
+        # statistical outlier.  This is distinct from the "Spectral Outlier
+        # Removal" preprocessing method above (which flags anomalous *spectra*):
+        # here the outlier test runs on the target y and its paired spectra are
+        # removed together, just before the train/test split.
+        ttk.Separator(preprocess_frame, orient='horizontal').pack(fill='x', pady=(8, 4))
+        self.target_outlier_var = tk.BooleanVar(value=False)
+        self.target_outlier_method_var = tk.StringVar(value=TARGET_OUTLIER_METHODS[0])
+        self.target_outlier_threshold_var = tk.StringVar(value="2.5")
+        ttk.Checkbutton(
+            preprocess_frame,
+            text="Target Variable Outlier Removal",
+            variable=self.target_outlier_var,
+            command=self._sync_target_outlier_state,
+        ).pack(anchor="w", pady=(2, 0))
+        self.target_outlier_row = ttk.Frame(preprocess_frame)
+        self.target_outlier_row.pack(fill="x", pady=2)
+        ttk.Label(self.target_outlier_row, text="Method:").pack(side="left")
+        self.target_outlier_method_combo = ttk.Combobox(
+            self.target_outlier_row, textvariable=self.target_outlier_method_var,
+            values=TARGET_OUTLIER_METHODS, state="disabled", width=8)
+        self.target_outlier_method_combo.pack(side="left", padx=2)
+        ttk.Label(self.target_outlier_row, text="Threshold:").pack(side="left", padx=(6, 0))
+        self.target_outlier_threshold_entry = ttk.Entry(
+            self.target_outlier_row, textvariable=self.target_outlier_threshold_var,
+            width=6, state="disabled")
+        self.target_outlier_threshold_entry.pack(side="left", padx=2)
+        ttk.Label(preprocess_frame,
+                  text="Removes samples whose selected property value is an "
+                       "outlier (z-score: std-devs from mean; IQR: Tukey-fence "
+                       "multiplier).",
+                  wraplength=230, foreground="#666666",
+                  font=('Helvetica', 8, 'italic')).pack(anchor="w", pady=(0, 2))
+
         # ===== Model selection group — a Single/Batch mode chooser =====
 
         self.model_frame = ttk.LabelFrame(step4, text="Model Selection", padding="10")
@@ -1379,6 +1414,15 @@ class LayoutMixin:
             return
         disabled = bool(self.find_best_preprocess_var.get())
         self.preprocess_combo.config(state='disabled' if disabled else 'readonly')
+
+    def _sync_target_outlier_state(self):
+        """Enable the target-outlier method/threshold controls only while the
+        'Target Variable Outlier Removal' checkbox is ticked."""
+        if not hasattr(self, 'target_outlier_method_combo'):
+            return
+        on = bool(self.target_outlier_var.get())
+        self.target_outlier_method_combo.config(state='readonly' if on else 'disabled')
+        self.target_outlier_threshold_entry.config(state='normal' if on else 'disabled')
 
     def _get_default_preprocess_kwargs(self, method):
         """Return safe default kwargs for a preprocessing method (no GUI dependency)."""

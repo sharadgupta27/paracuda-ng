@@ -140,6 +140,11 @@ class UIFlowMixin:
             self.smooth_poly_var.set("2")
             self.outlier_method_var.set("zscore")
             self.outlier_threshold_var.set("3.0")
+            if hasattr(self, 'target_outlier_var'):
+                self.target_outlier_var.set(False)
+                self.target_outlier_method_var.set(TARGET_OUTLIER_METHODS[0])
+                self.target_outlier_threshold_var.set("2.5")
+                self._sync_target_outlier_state()
 
             # ── Step ④ Model selection ──────────────────────────────────
             self.model_mode_var.set("Single")
