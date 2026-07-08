@@ -1264,12 +1264,13 @@ class LayoutMixin:
         # Enable/disable Batch Run button (same as batch mode)
         self.batch_run_btn.config(state=state)
         
-        # Disable Optimize Components when in batch mode
+        # Keep Optimize Components (PLS-R/PCA) available in batch mode so component
+        # optimization can be applied to PLS-R during a batch run.  Previously the
+        # checkbox was force-disabled and its value reset whenever batch mode was
+        # on, which silently prevented PLS-R component optimization in batch.
         if hasattr(self, 'optimize_components_checkbox') and self.optimize_components_checkbox is not None:
-            optimize_state = 'disabled' if self.batch_mode_var.get() else 'normal'
-            self.optimize_components_checkbox.config(state=optimize_state)
-            if self.batch_mode_var.get():
-                self.optimize_components_var.set(False)
+            self.optimize_components_checkbox.config(state='normal')
+            self.optimize_components_checkbox.grid()
         
         # When batch mode is enabled, disable single model selection
         if self.batch_mode_var.get():

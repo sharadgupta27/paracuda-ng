@@ -223,11 +223,14 @@ def generate_batch_filename(input_filename, properties, models):
     return f"{input_filename}_batch_{prop_str}_{model_str}_{timestamp}.xlsx"
 
 
-def generate_property_filename(input_filename, property_name):
+def generate_property_filename(input_filename, property_name, timestamp=None):
     """
-    Generate filename for single property batch results
+    Generate filename for single property batch results.
+
+    When ``timestamp`` is supplied it is used verbatim so the results Excel, its
+    PDF, and a later-saved model of the same run all share one timestamp.
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     # Clean property name for filename
     safe_prop = property_name.replace(' ', '_').replace('/', '_')
     return f"{input_filename}_{safe_prop}_{timestamp}.xlsx"

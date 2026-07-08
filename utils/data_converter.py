@@ -490,12 +490,24 @@ def convert_to_paracuda(df, orientation, wl_cols, name_col,
 
     wl_sorted = sorted(wl_present, key=_wl_key)
 
+    # Any column whose name is a purely-numeric value (e.g. a wavelength header
+    # like 1000 or 1000.0) is written out as a *string* header. Numeric headers
+    # otherwise round-trip through Excel/pandas as int/float, which breaks
+    # downstream detection and produces lexicographic-vs-numeric mismatches.
+    def _colname_to_str(c):
+        s = str(c).strip()
+        try:
+            f = float(s)
+        except (ValueError, TypeError):
+            return c  # not fully numeric -> leave label untouched
+        return str(int(f)) if f == int(f) else s
+
     # Build output using pd.concat to avoid DataFrame fragmentation warnings
     cols = {'Names': names}
     for pc in prop_present:
-        cols[pc] = pd.to_numeric(df[pc], errors='coerce').values
+        cols[_colname_to_str(pc)] = pd.to_numeric(df[pc], errors='coerce').values
     for wc in wl_sorted:
-        cols[wc] = pd.to_numeric(df[wc], errors='coerce').values
+        cols[_colname_to_str(wc)] = pd.to_numeric(df[wc], errors='coerce').values
 
     out_df = pd.DataFrame(cols)
 

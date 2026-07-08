@@ -90,6 +90,11 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
         self.selected_properties = []  # For batch processing
         self.selected_models = []  # For batch model processing
         self.single_property_mode = False  # Track if single property is selected for save model
+        # Explicit save overrides set when a best/auto-selected model (from a batch
+        # or best-preprocessing run) becomes the saveable model; None → save from
+        # the live GUI widgets (plain single run).
+        self._save_model_type_override = None
+        self._save_model_params_override = None
         self.filtered_wavelengths = None
         self.new_wavelengths = None
         self.new_fwhms = None            # per-band FWHM for SRF resampling
@@ -469,6 +474,17 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
         try:
             from joblib.externals.loky import get_reusable_executor
             get_reusable_executor().shutdown(wait=True)
+        except Exception:
+            pass
+
+        # Close any matplotlib figures while the Tk interpreter is still alive, so
+        # their canvases/PhotoImages are released now instead of by the GC after
+        # teardown (which prints "main thread is not in main loop").  Only if
+        # pyplot was actually imported — don't force the heavy import on exit.
+        try:
+            import sys
+            if 'matplotlib.pyplot' in sys.modules:
+                sys.modules['matplotlib.pyplot'].close('all')
         except Exception:
             pass
 

@@ -38,6 +38,15 @@ train_test_split = LazyCallable('sklearn.model_selection', 'train_test_split')
 mean_squared_error = LazyCallable('sklearn.metrics', 'mean_squared_error')
 r2_score = LazyCallable('sklearn.metrics', 'r2_score')
 mean_absolute_error = LazyCallable('sklearn.metrics', 'mean_absolute_error')
+# Force the non-interactive Agg backend BEFORE matplotlib.pyplot is ever imported.
+# Every figure in Paracuda is either embedded in Tk via FigureCanvasTkAgg or written
+# to a PDF — none are shown with plt.show() — so the interactive TkAgg backend is not
+# needed.  TkAgg's pyplot-managed figure managers register Tcl async handlers which,
+# torn down at interpreter exit, cause the fatal "Tcl_AsyncDelete: async handler
+# deleted by the wrong thread" crash (and the noisy "main thread is not in main loop"
+# messages) when the app closes.  Agg avoids all of that.
+import matplotlib as _matplotlib
+_matplotlib.use('Agg')
 plt = LazyModule('matplotlib.pyplot')
 Figure = LazyCallable('matplotlib.figure', 'Figure')
 PdfPages = LazyCallable('matplotlib.backends.backend_pdf', 'PdfPages')

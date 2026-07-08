@@ -129,10 +129,18 @@ class DataIOMixin:
                 total_cols = len(self.df.columns)
                 col_note = (f" (showing first {MAX_DISPLAY_COLS} of {total_cols} columns)"
                             if total_cols > MAX_DISPLAY_COLS else "")
+                # Wavelength column names are strings, so min()/max() on them would
+                # compare lexicographically ("1000" < "999"). Compare numerically.
+                if self.wavelengths:
+                    wl_floats = [float(w) for w in self.wavelengths]
+                    wl_min, wl_max = min(wl_floats), max(wl_floats)
+                    wl_range = f"{wl_min:g} - {wl_max:g} nm"
+                else:
+                    wl_range = "n/a"
                 self.data_display_text.insert('1.0',
                     f"Dataset: {self.input_filename}\n"
                     f"Samples: {len(self.df)}\n"
-                    f"Wavelengths: {len(self.wavelengths)} ({min(self.wavelengths)} - {max(self.wavelengths)} nm) "
+                    f"Wavelengths: {len(self.wavelengths)} ({wl_range}) "
                     f"[detected unit: {self.wavelength_unit}]\n"
                     f"Spectral domain: {self.spectral_domain}\n"
                     f"Properties: {', '.join(self.soil_properties)}\n"
@@ -193,9 +201,16 @@ class DataIOMixin:
                 messagebox.showwarning("Warning", "Please load an Excel file first")
                 return
             
+            # Wavelength column names are strings — compare numerically, not
+            # lexicographically (otherwise "1000" < "999" gives a bogus range).
+            if self.wavelengths:
+                _wl_floats = [float(w) for w in self.wavelengths]
+                _wl_range = f"{min(_wl_floats):g} - {max(_wl_floats):g}"
+            else:
+                _wl_range = "n/a"
             info = "Dataset Info:\n"
             info += f"Number of samples: {len(self.df)}\n"
-            info += f"Wavelength range: {min(self.wavelengths)} - {max(self.wavelengths)} nm\n"
+            info += f"Wavelength range: {_wl_range} nm\n"
             info += f"Wavelength unit (detected): {self.wavelength_unit}\n"
             info += f"Spectral domain (detected): {self.spectral_domain}\n"
             info += f"Available soil properties: {', '.join(self.soil_properties)}\n"
@@ -288,10 +303,21 @@ class DataIOMixin:
                 messagebox.showwarning("Warning", "Please train a model first")
                 return
 
+            # Model type + hyper-parameters to record.  A best/auto-selected model
+            # from a batch or best-preprocessing run sets explicit overrides so the
+            # saved file describes the winning combination rather than the current
+            # GUI widgets (which may show a different model); a plain single run
+            # leaves the overrides unset and falls back to the live widgets.
+            _mtype_override = getattr(self, '_save_model_type_override', None)
+            _mparams_override = getattr(self, '_save_model_params_override', None)
+            save_model_type = _mtype_override or self.model_var.get()
+            save_model_parameters = (dict(_mparams_override) if _mparams_override is not None
+                                     else {name: var.get() for name, var in self.param_vars.items()})
+
             # Generate default filename — reuse the timestamp of this run's
             # results/PDF so the model file matches them.
             default_filename = generate_model_filename(
-                self.input_filename, self.selected_property, self.model_var.get(),
+                self.input_filename, self.selected_property, save_model_type,
                 timestamp=getattr(self, '_last_result_timestamp', None))
             
             file_path = filedialog.asksaveasfilename(
@@ -336,10 +362,10 @@ class DataIOMixin:
                     'srf_table': self.srf_table,
                     'custom_fwhm_table': self.custom_fwhm_table,
                     'exclude_ranges': self._get_exclude_ranges(),
-                    'model_type': self.model_var.get(),
+                    'model_type': save_model_type,
                     'preprocessing': _pp_method,
                     'preprocessing_kwargs': _pp_kwargs,
-                    'model_parameters': {name: var.get() for name, var in self.param_vars.items()},
+                    'model_parameters': save_model_parameters,
                     'selected_property': self.selected_property
                 }
                 joblib.dump(model_data, file_path)
@@ -559,6 +585,24 @@ class DataIOMixin:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load image: {str(e)}")
     
+    def _image_matches_model_grid(self, img_wl, model_wl):
+        """True when the image's per-band wavelengths already coincide with the
+        model's resampled grid, so resampling would be a no-op and must be
+        skipped (e.g. an EnMAP image fed to an EnMAP-resampled model).
+
+        Requires the same band count and every centre within a small tolerance
+        (10% of the model band spacing, min 0.5 nm) to absorb sub-nanometre
+        header-vs-preset rounding."""
+        try:
+            if not img_wl or model_wl is None or len(img_wl) != len(model_wl):
+                return False
+            a = np.sort(np.asarray([float(w) for w in img_wl], dtype=float))
+            b = np.sort(np.asarray([float(w) for w in model_wl], dtype=float))
+            tol = max(0.5, 0.1 * float(np.min(np.diff(b)))) if b.size >= 2 else 0.5
+            return bool(np.all(np.abs(a - b) <= tol))
+        except Exception:
+            return False
+
     def _confirm_apply_resampling(self, context):
         """Ask whether the model's spectral resampling should be re-applied to the
         unknown ``context`` (e.g. "unknown data" / "image") before prediction.
@@ -641,7 +685,17 @@ class DataIOMixin:
             # image is asserted to already be on that grid, so skip resampling).
             img_resample = True
             if self.new_wavelengths is not None and len(self.new_wavelengths) > 0:
-                if self._confirm_apply_resampling("image"):
+                if self._image_matches_model_grid(image_wavelengths, self.new_wavelengths):
+                    # The image is already on the model's band grid (e.g. an EnMAP
+                    # image predicted with an EnMAP-resampled model).  Re-applying
+                    # resampling would resample the image onto essentially itself,
+                    # so skip it automatically — no need to prompt the user.
+                    img_resample = False
+                    self.status_text.insert(
+                        tk.END, f"  ↳ Resampling skipped — image already matches the "
+                                f"model's {len(self.new_wavelengths)}-band grid "
+                                f"(no resampling needed).\n")
+                elif self._confirm_apply_resampling("image"):
                     self.status_text.insert(
                         tk.END, f"  ↳ Applied resampling: {self.resample_method} → "
                                 f"{len(self.new_wavelengths)} bands.\n")
@@ -682,8 +736,23 @@ class DataIOMixin:
             self._pin_geometry()
             self.predict_image_btn.config(state='disabled')
             self.view_image_btn.config(state='disabled')
+
+            # Predict per pixel-chunk INSIDE the image processor so the full
+            # (n_px, features) scaled matrix is never materialised — for a large
+            # scene that matrix alone can be tens of GiB (e.g. 13.4M px × 1787
+            # bands ≈ 89 GiB).  This closure maps a scaled block to final-unit
+            # predictions (PCA → model.predict → inverse-transform).
+            _pca = self.pca_component
+            _model = self.trained_model
+            _scaler_y = self.scaler_y
+
+            def _predict_chunk(scaled_block):
+                Xb = _pca.transform(scaled_block) if _pca is not None else scaled_block
+                ps = np.asarray(_model.predict(Xb)).reshape(-1, 1)
+                return _scaler_y.inverse_transform(ps).ravel()
+
             try:
-                (processed_data, original_shape, valid_mask, resampled_cube,
+                (predictions, original_shape, valid_mask, resampled_cube,
                  target_wl) = self._run_offloaded(
                     process_image_for_prediction,
                     self.image_data, img_wl, self.model_preprocessing,
@@ -691,7 +760,8 @@ class DataIOMixin:
                     preprocess_kwargs=preprocess_kwargs,
                     resample_method=self.resample_method, new_fwhms=self.new_fwhms,
                     srf_table=self.srf_table, resample=img_resample,
-                    mask_background=mask_bg, return_cube=want_cube
+                    mask_background=mask_bg, return_cube=want_cube,
+                    predict_fn=_predict_chunk
                 )
                 n_bg = int((~valid_mask).sum())
                 if n_bg:
@@ -701,20 +771,12 @@ class DataIOMixin:
                     self.status_text.see(tk.END)
 
                 self.update_progress(40, "Making predictions...")
-
-                # Make prediction — apply PCA transform if this is a PCA model
-                if self.pca_component is not None:
-                    processed_data = self._run_offloaded(
-                        self.pca_component.transform, processed_data)
-                predictions_scaled = self._run_offloaded(
-                    self.trained_model.predict, processed_data)
             finally:
                 self._unpin_geometry()
                 self.set_busy_state(False)
                 # Re-enable Predict so the user can run again; View is enabled
                 # below only once a prediction image actually exists.
                 self.predict_image_btn.config(state='normal')
-            predictions = self.scaler_y.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
 
             self.update_progress(80, "Saving results...")
             
@@ -1068,7 +1130,14 @@ class DataIOMixin:
 
             export_wl = filt_wl
             if self.new_wavelengths is not None and len(self.new_wavelengths) > 0:
-                if self._confirm_apply_resampling("unknown data"):
+                if self._image_matches_model_grid(filt_wl, self.new_wavelengths):
+                    # Data already on the model's grid — resampling is a no-op, skip
+                    # it silently rather than prompting.
+                    self.status_text.insert(
+                        tk.END,
+                        f"  ↳ Resampling skipped — data already matches the model's "
+                        f"{len(self.new_wavelengths)}-band grid (no resampling needed).\n")
+                elif self._confirm_apply_resampling("unknown data"):
                     X_unknown = resample_spectra(X_unknown, filt_wl, self.new_wavelengths,
                                                  method=self.resample_method, fwhms=self.new_fwhms,
                                                  srf_table=self.srf_table)

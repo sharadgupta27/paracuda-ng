@@ -67,12 +67,15 @@ def create_model(model_type, params, n_cores=1):
     """
     try:
         if model_type == "PLS-R":
-            n_components = min(int(params['n_components']), 50)  # Reasonable limit
+            # Cap at a reasonable upper limit and floor at 1: PLSRegression requires
+            # n_components >= 1, so a 0/negative entry must not reach the estimator
+            # (clamp_n_components only bounds it from above).
+            n_components = max(1, min(int(params['n_components']), 50))
             return PLSRegression(n_components=n_components)
-        
+
         elif model_type == "PCA":
-            n_components = min(int(params['n_components']), 50)
-            return PCA(n_components=n_components, 
+            n_components = max(1, min(int(params['n_components']), 50))
+            return PCA(n_components=n_components,
                       svd_solver=params['svd_solver'],
                       whiten=params['whiten'])
         

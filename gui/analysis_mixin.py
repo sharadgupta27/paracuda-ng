@@ -268,8 +268,12 @@ class AnalysisMixin:
         plots.  The Excel includes the hyperparameter search space when tuned.
         """
         try:
+            # One shared timestamp for this run's Excel, PDF and (later) the saved
+            # model, so all three artefacts of the winning combo match.
+            self._last_result_timestamp = make_timestamp()
             default_filename = generate_default_filename(
-                self.input_filename, property_name, model_name)
+                self.input_filename, property_name, model_name,
+                timestamp=self._last_result_timestamp)
             file_path = filedialog.asksaveasfilename(
                 title="Save best preprocessing+model results",
                 defaultextension=".xlsx",
@@ -376,9 +380,53 @@ class AnalysisMixin:
             self._unpin_geometry()
             self.set_busy_state(False)
 
+    def _promote_result_to_saveable(self, result, property_name, model_label=None):
+        """Copy a ``run_single_model_analysis`` result into the ``self.*`` state
+        that :meth:`save_model` reads, so a best/auto-selected model from a batch
+        or best-preprocessing run can be saved exactly like a plain single run.
+
+        ``model_label`` is the display key of the winning model (may carry a
+        ``" (Tuned)"`` suffix); the base model type is derived from it (falling
+        back to the result's ``model_type``) and, together with the winning
+        hyper-parameters, is recorded as an explicit save override so the saved
+        model reflects the best combination rather than the current GUI widgets.
+        Enables the Save button when a single property is selected.
+        """
+        if not result:
+            return
+        self.compositional_model = None
+        self.trained_model = result.get('model')
+        self.pca_component = result.get('pca_component')
+        self.scaler_X = result.get('scaler_X')
+        self.scaler_y = result.get('scaler_y')
+        self.model_preprocessing = result.get('preprocessing')
+        self.model_preprocessing_kwargs = dict(result.get('preprocessing_kwargs') or {})
+        self.selected_property = property_name
+
+        base_type = result.get('model_type')
+        if model_label:
+            base_type = str(model_label).replace(' (Tuned)', '').strip() or base_type
+        # Explicit overrides consumed by save_model (model_type + hyper-parameters
+        # of the winning model), so the saved file matches the best combination.
+        self._save_model_type_override = base_type
+        params = result.get('params') or {}
+        self._save_model_params_override = {k: str(v) for k, v in params.items()}
+
+        if getattr(self, 'single_property_mode', False) and hasattr(self, 'save_model_btn'):
+            self.save_model_btn.config(state='normal')
+
+    def _clear_save_overrides(self):
+        """Drop any best-model save overrides so a subsequent plain single run
+        saves from the live GUI widgets, not a stale batch winner."""
+        self._save_model_type_override = None
+        self._save_model_params_override = None
+
     def _run_batch_analysis_impl(self):
         """Run analysis for multiple properties and/or models"""
         try:
+            # Drop any stale best-model save overrides from a previous run; the
+            # single-property paths below re-set them for the new winner.
+            self._clear_save_overrides()
             # Check batch mode
             if self.batch_mode_var.get() and not self.selected_models:
                 messagebox.showwarning("Warning", "Please select models for batch processing")
@@ -465,6 +513,18 @@ class AnalysisMixin:
                 if best_result:
                     self._export_best_combo_results(
                         properties_to_run[0], best_pp, best_mdl, best_result)
+                    # Promote the winning (preprocessing + model, tuned if enabled)
+                    # combination to saveable state so it can be saved like a plain
+                    # single run — including the winning preprocessing method and
+                    # hyper-parameters, regardless of Auto-Select settings.
+                    self._promote_result_to_saveable(
+                        best_result, properties_to_run[0], model_label=best_mdl)
+                    self.status_text.insert(
+                        tk.END, f"\n💾 Best combo ready to save: {best_pp} + {best_mdl} "
+                                f"for {properties_to_run[0]} (use the Save button).\n")
+                    self.status_text.see(tk.END)
+                else:
+                    self.save_model_btn.config(state='disabled')
                 # The search already ran all preprocessing × model combinations and
                 # printed the ranking table. No need to re-run batch analysis.
                 self.update_progress(100, "Best preprocessing search complete!")
@@ -568,6 +628,10 @@ class AnalysisMixin:
                     # Store comparison df and best model for this property
                     batch_results[property_name]['_comparison'] = comparison_df
                     batch_results[property_name]['_best_model'] = best_model if auto_select else None
+                    # The top-ranked model is recorded unconditionally (even when
+                    # Auto-Select is off) so a single-property run can still promote
+                    # and save it.  Upgraded to the tuned key below when tuning runs.
+                    batch_results[property_name]['_winner_key'] = best_model
 
                     # ── Optuna tuning of the winning model (manual checkbox) ──
                     if (getattr(self, 'tune_hyperparams_var', None)
@@ -585,6 +649,7 @@ class AnalysisMixin:
                             all_results_for_comparison[f"{property_name}_{tuned_key}"] = tuned_result
                             # Prefer the tuned model as the recommended one.
                             batch_results[property_name]['_best_model'] = tuned_key
+                            batch_results[property_name]['_winner_key'] = tuned_key
                             fig, ax = create_scatter_plot(
                                 tuned_result['y_test'], tuned_result['y_pred'],
                                 tuned_key, property_name,
@@ -601,15 +666,21 @@ class AnalysisMixin:
 
             # Save results per property
             self.update_progress(90, "Saving results...")
-            
+
             # Ask for output folder
             output_folder = filedialog.askdirectory(title="Select folder to save results")
-            
+
+            # One shared timestamp for this run's Excel, PDF and (later) the saved
+            # model, so all three artefacts of the same analysis match.
+            self._last_result_timestamp = make_timestamp()
+
             saved_files = []
-            
+
             for property_name, models_results in batch_results.items():
                 # Generate filename for this property
-                property_filename = generate_property_filename(self.input_filename, property_name)
+                property_filename = generate_property_filename(
+                    self.input_filename, property_name,
+                    timestamp=self._last_result_timestamp)
                 file_path = os.path.join(output_folder, property_filename)
                 
                 # Determine which model(s) to save
@@ -685,10 +756,30 @@ class AnalysisMixin:
             self.status_text.insert(tk.END, "="*50 + "\n")
             self.status_text.see(tk.END)
             
-            # Disable save model button for batch analysis (multiple properties/models)
-            self.save_model_btn.config(state='disabled')
-            
-            messagebox.showinfo("Success", 
+            # Save-model availability: a single-property batch (even with
+            # Auto-Select Best / batch models / hyper-parameter tuning) still has
+            # ONE winning model, so promote it to saveable state and enable Save —
+            # it saves exactly like a plain single run (best model + its params +
+            # preprocessing + resampling config).  Multi-property runs have no
+            # single model to save, so the button stays disabled.
+            if len(properties_to_run) == 1:
+                prop = properties_to_run[0]
+                winner_key = batch_results.get(prop, {}).get('_winner_key')
+                winner_result = (batch_results.get(prop, {}).get(winner_key)
+                                 if winner_key else None)
+                if winner_result:
+                    self._promote_result_to_saveable(winner_result, prop,
+                                                     model_label=winner_key)
+                    self.status_text.insert(
+                        tk.END, f"\n💾 Best model ready to save: {winner_key} "
+                                f"for {prop} (use the Save button).\n")
+                    self.status_text.see(tk.END)
+                else:
+                    self.save_model_btn.config(state='disabled')
+            else:
+                self.save_model_btn.config(state='disabled')
+
+            messagebox.showinfo("Success",
                 f"Batch analysis complete!\n\nSaved {len(saved_files)} property result files to:\n{output_folder}")
         
         except Exception as e:
@@ -813,10 +904,11 @@ class AnalysisMixin:
                     param_value = param_info.get("default", "")
                     params[param_name] = parse_parameter_value(param_name, param_value, param_name)
             
-            # Component optimization for PLSR (only if enabled and current model)
-            if (model_name == self.model_var.get() and 
-                self.optimize_components_var.get() and 
-                model_name in ["PLS-R"]):
+            # Component optimization for PLS-R whenever the Optimize Components box
+            # is checked.  In batch mode the single-model selector is disabled, so
+            # this is NOT gated on ``model_name == self.model_var.get()`` — every
+            # PLS-R model in the run is optimized when the box is on.
+            if (self.optimize_components_var.get() and model_name in ["PLS-R"]):
                 max_components = min(50, X_train.shape[1], X_train.shape[0] - 1)
                 optimal_components, _, _, _ = self._run_offloaded(
                     optimize_components_parallel,
@@ -846,6 +938,7 @@ class AnalysisMixin:
 
             # Handle PCA separately.  Model fitting is the heavy, Tk-free step, so
             # it is offloaded to keep the GUI responsive.
+            pca_component = None
             if model_name == "PCA":
                 pca = trained_model
                 X_train_pca = self._run_offloaded(pca.fit_transform, X_train_scaled)
@@ -854,6 +947,7 @@ class AnalysisMixin:
                 trained_model.fit(X_train_pca, y_train_scaled)
                 y_pred_scaled = trained_model.predict(X_test_pca)
                 y_train_pred_scaled = trained_model.predict(X_train_pca)
+                pca_component = pca  # keep so a saved/best PCA model predicts correctly
             else:
                 self._run_offloaded(trained_model.fit, X_train_scaled, y_train_scaled)
                 y_pred_scaled = trained_model.predict(X_test_scaled)
@@ -977,6 +1071,7 @@ class AnalysisMixin:
                 'overfitting_severity': assessment['severity'],
                 'overfitting_reasons': overfitting_reasons,
                 'model': trained_model,
+                'pca_component': pca_component,
                 'scaler_X': scaler_X,
                 'scaler_y': scaler_y,
                 'wavelengths': current_wavelengths,
@@ -986,6 +1081,7 @@ class AnalysisMixin:
                 'hyperparameter_search_space': search_space,
                 'cv_results': cv_results,
                 'preprocessing': active_preprocess,
+                'preprocessing_kwargs': preprocess_kwargs,
                 'model_type': model_name,
                 'property_name': property_name
             }
@@ -1224,6 +1320,9 @@ class AnalysisMixin:
 
     def _start_analysis_impl(self):
         try:
+            # A plain single run saves from the live GUI widgets, so drop any
+            # best-model override left by a previous batch/best-preprocessing run.
+            self._clear_save_overrides()
             # Compositional (log-ratio) modelling takes priority: when a transform
             # is chosen and 2+ parts are selected, models are trained on ALR/CLR/
             # ILR coordinates and predictions are back-transformed to sum to 100 %.

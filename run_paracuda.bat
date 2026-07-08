@@ -112,15 +112,18 @@ REM and build the path to this environment's folder.
 set "CONDA_ROOT=%CONDA_BAT:\Scripts\activate.bat=%"
 set "ENV_DIR=%CONDA_ROOT%\envs\%ENV_NAME%"
 
-REM Make the 'conda' command available (activate base only).  We deliberately do
-REM NOT use 'conda activate <env>' / 'activate.bat <env>' below: under Miniforge
-REM that routes through mamba, which fails unless the shell was 'conda init'-ed.
-REM Instead we run the environment's python.exe directly and put its DLL folders
-REM on PATH, which works without any shell initialization.
-call "%CONDA_BAT%"
-if errorlevel 1 (
+REM Locate a conda launcher we can call WITHOUT initializing the shell.  We must
+REM NOT call Scripts\activate.bat here: on current Miniforge/mamba it routes
+REM through libmamba and aborts with "critical libmamba Shell not initialized".
+REM 'conda' is only needed for the one-time 'conda create' below; the app itself
+REM runs the environment's python.exe directly (DLL folders are added to PATH
+REM later), which needs no activation.  Prefer the real conda.exe; fall back to
+REM condabin\conda.bat.
+set "CONDA_EXE=%CONDA_ROOT%\Scripts\conda.exe"
+if not exist "%CONDA_EXE%" set "CONDA_EXE=%CONDA_ROOT%\condabin\conda.bat"
+if not exist "%CONDA_EXE%" (
     echo.
-    echo ERROR: Failed to initialize Conda!
+    echo ERROR: Could not find the 'conda' executable under %CONDA_ROOT%.
     echo.
     echo Press any key to exit...
     pause > nul
@@ -132,7 +135,7 @@ if not exist "%ENV_DIR%\python.exe" (
     echo '%ENV_NAME%' environment not found - creating it now.
     echo This is a one-time setup and may take several minutes...
     echo.
-    call conda create -n %ENV_NAME% -c conda-forge python=%PY_VERSION% -y
+    call "%CONDA_EXE%" create -n %ENV_NAME% -c conda-forge python=%PY_VERSION% -y
     if errorlevel 1 (
         echo.
         echo ERROR: Failed to create the '%ENV_NAME%' environment!

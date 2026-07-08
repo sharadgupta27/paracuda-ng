@@ -263,7 +263,7 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
                                 mask_background=True, saturation=1.0e6,
                                 return_cube=True, chunk_pixels=100_000,
                                 min_band_valid_frac=0.5, min_pixel_valid_frac=0.5,
-                                resample=True):
+                                resample=True, predict_fn=None):
     """Process an image cube into the model's scaled input, aligned to the model's
     band grid, and flag background / no-data pixels so they are not predicted.
 
@@ -294,10 +294,22 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
             full-size float32 array — pass False unless the user asked to
             export the resampled cube.
         chunk_pixels: pixels per processing block.
+        predict_fn: optional callable mapping a scaled ``(n_chunk, features)``
+            block to a ``(n_chunk,)`` prediction vector (in the final output
+            units — the caller wraps PCA/​model.predict/​inverse-transform).
+            When given, predictions are computed *inside* the chunk loop and only
+            a single ``(n_px,)`` float32 vector is kept, instead of the full
+            ``(n_px, features)`` scaled matrix.  This is essential for large
+            scenes: a 13.4 M-pixel × 1787-band scaled matrix alone is ~89 GiB,
+            whereas the prediction vector is ~54 MB.  The first element of the
+            returned tuple is then the prediction vector rather than the scaled
+            matrix.
 
     Returns:
-        (scaled_data, original_shape, valid_mask, resampled_cube, target_wl)
-        where ``valid_mask`` is a per-pixel bool (flattened row-major) marking
+        (scaled_data_or_predictions, original_shape, valid_mask, resampled_cube,
+        target_wl).  The first element is the ``(n_px,)`` prediction vector when
+        ``predict_fn`` is supplied, otherwise the ``(n_px, features)`` scaled
+        matrix.  ``valid_mask`` is a per-pixel bool (flattened row-major) marking
         real pixels, and ``resampled_cube`` is the (pixels, target_bands)
         reflectance on the model grid (NaN at background pixels) for validation
         — or ``None`` when ``return_cube`` is False.
@@ -409,15 +421,30 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
         # ``resample=False`` (user asserts the image is already on the model's
         # grid) skips the resample step; the selected source bands are fed
         # straight through and the scaler validates the feature count.
-        same_grid = (len(source_wavelengths) == len(target_wl) and
-                     np.allclose(np.sort(source_wavelengths), np.sort(target_wl),
-                                 atol=1e-6))
+        #
+        # Even when ``resample=True``, if the selected source bands already sit on
+        # the model's target grid the resample step is a no-op, so we skip it: an
+        # EnMAP image predicted with an EnMAP-resampled model must NOT be
+        # resampled onto (essentially) itself.  The tolerance is a small fraction
+        # of the target band spacing (min 0.5 nm) rather than 1e-6, because real
+        # header wavelengths differ from a sensor preset by sub-nanometre rounding.
+        same_grid = False
+        if len(source_wavelengths) == len(target_wl):
+            sw = np.sort(np.asarray(source_wavelengths, dtype=float))
+            tw = np.sort(np.asarray(target_wl, dtype=float))
+            grid_tol = (max(0.5, 0.1 * float(np.min(np.diff(tw))))
+                        if tw.size >= 2 else 0.5)
+            same_grid = bool(np.all(np.abs(sw - tw) <= grid_tol))
         do_resample = bool(resample) and not same_grid
         out_wl = np.asarray(target_wl if do_resample else source_wavelengths,
                             dtype=float)
         n_out = len(out_wl)
         cube = np.empty((n_px, n_out), dtype='float32') if return_cube else None
-        scaled_out = None   # allocated after the first chunk fixes the width
+        # With ``predict_fn`` we keep only the (n_px,) prediction vector; without
+        # it we accumulate the full (n_px, features) scaled matrix (its width is
+        # fixed by the first chunk).
+        scaled_out = None
+        predictions = None
 
         step = max(1, int(chunk_pixels))
         for s in range(0, n_px, step):
@@ -434,15 +461,22 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
             else:
                 block = preprocess_spectra(block, preprocessing_method, **preprocess_kwargs)
             block = scaler_X.transform(block)
-            if scaled_out is None:
-                scaled_out = np.empty((n_px, block.shape[1]), dtype='float32')
-            scaled_out[s:e] = block
+            if predict_fn is not None:
+                pr = np.asarray(predict_fn(block), dtype='float32').ravel()
+                if predictions is None:
+                    predictions = np.empty(n_px, dtype='float32')
+                predictions[s:e] = pr
+            else:
+                if scaled_out is None:
+                    scaled_out = np.empty((n_px, block.shape[1]), dtype='float32')
+                scaled_out[s:e] = block
 
         # Reflectance on the model grid for validation export (NaN at background).
         if cube is not None:
             cube[~valid] = np.nan
 
-        return scaled_out, original_shape, valid, cube, out_wl
+        result = predictions if predict_fn is not None else scaled_out
+        return result, original_shape, valid, cube, out_wl
 
     except Exception as e:
         raise Exception(f"Image processing failed: {str(e)}")
