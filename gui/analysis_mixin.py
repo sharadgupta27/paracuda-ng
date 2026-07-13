@@ -318,6 +318,10 @@ class AnalysisMixin:
                 overfitting_flag=result.get('overfitting_flag', False))
             self.store_analysis_plot(combo_label, property_name, fig_scatter)
 
+            fig_train = self._create_train_scatter(result, combo_label, property_name)
+            if fig_train is not None:
+                self.store_analysis_plot(f"{combo_label} (Training)", property_name, fig_train)
+
             fig_imp, ax_imp = plt.subplots(figsize=(10, 6))
             create_feature_importance_plot(
                 result.get('model'), model_name, result['wavelengths'],
@@ -328,6 +332,8 @@ class AnalysisMixin:
                 refl = getattr(self, '_reflectance_spectra_fig', None)
                 if refl is not None:
                     pdf.savefig(refl, bbox_inches='tight')
+                if fig_train is not None:
+                    pdf.savefig(fig_train, bbox_inches='tight')
                 pdf.savefig(fig_scatter, bbox_inches='tight')
                 pdf.savefig(fig_imp, bbox_inches='tight')
             plt.close(fig_imp)
@@ -335,6 +341,22 @@ class AnalysisMixin:
                 f"  ✔ Best-combo plots saved: {os.path.basename(pdf_path)}\n")
         except Exception as exc:
             self.append_status(f"  ⚠ Best-combo export failed: {exc}\n")
+
+    def _create_train_scatter(self, result, model_label, property_name):
+        """Build the TRAINING-set scatter figure for a result dict.
+
+        Returns None when the result carries no training predictions (e.g. an
+        older cached result), so callers can simply skip the extra figure.
+        """
+        y_train = result.get('y_train')
+        y_train_pred = result.get('y_train_pred')
+        if y_train is None or y_train_pred is None:
+            return None
+        fig, _ = create_scatter_plot(
+            y_train, y_train_pred, model_label, property_name,
+            {'r2': result['train_r2'], 'rmse': result['train_rmse']},
+            dataset_label="Training Data")
+        return fig
 
     def _print_batch_summary_table(self, property_name, comparison_df):
         """Print a ranked summary table (Train/Test R², RMSE, CV, overfitting) for a
@@ -573,6 +595,12 @@ class AnalysisMixin:
                                 overfitting_flag=result.get('overfitting_flag', False)
                             )
                             self.store_analysis_plot(model_name, property_name, fig)
+
+                            fig_train = self._create_train_scatter(
+                                result, model_name, property_name)
+                            if fig_train is not None:
+                                self.store_analysis_plot(
+                                    f"{model_name} (Training)", property_name, fig_train)
                             
                             # Display with confidence intervals if available
                             if result.get('confidence_intervals'):
@@ -656,6 +684,12 @@ class AnalysisMixin:
                                 {'r2': tuned_result['test_r2'], 'rmse': tuned_result['test_rmse']},
                                 overfitting_flag=tuned_result.get('overfitting_flag', False))
                             self.store_analysis_plot(tuned_key, property_name, fig)
+
+                            fig_train = self._create_train_scatter(
+                                tuned_result, tuned_key, property_name)
+                            if fig_train is not None:
+                                self.store_analysis_plot(
+                                    f"{tuned_key} (Training)", property_name, fig_train)
                             self.status_text.insert(
                                 tk.END,
                                 f"  ✔ {tuned_key}: R²={tuned_result['test_r2']:.4f} "
@@ -721,8 +755,14 @@ class AnalysisMixin:
                             continue
                             
                         results = model_results[model_name]
-                        
-                        # Scatter plot
+
+                        # Training scatter, then test scatter
+                        fig_train = self._create_train_scatter(
+                            results, model_name, property_name)
+                        if fig_train is not None:
+                            pdf.savefig(fig_train, bbox_inches='tight')
+                            plt.close(fig_train)
+
                         fig, ax = create_scatter_plot(
                             results['y_test'],
                             results['y_pred'],
@@ -1067,6 +1107,10 @@ class AnalysisMixin:
                 'test_rmse': test_rmse,
                 'test_mae': test_mae,
                 'confidence_intervals': confidence_intervals,
+                # Training-set observations/predictions, kept so callers can draw
+                # a training scatter alongside the test one.
+                'y_train': y_train,
+                'y_train_pred': y_train_pred,
                 'train_r2': train_r2,
                 'train_rmse': train_rmse,
                 'train_mae': train_mae,
@@ -1749,13 +1793,21 @@ class AnalysisMixin:
                 train_r2, test_r2, train_rmse, test_rmse,
                 cv_results['r2_mean'] if cv_results else None)
 
-            # Create and store scatter plot for visualization
+            # Create and store scatter plots (train + test) for visualization
             fig, ax = create_scatter_plot(
                 y_test, y_pred, model_type, self.selected_property,
                 {'r2': test_r2, 'rmse': test_rmse},
                 overfitting_flag=overfit['flag']
             )
             self.store_analysis_plot(model_type, self.selected_property, fig)
+
+            fig_train, _ = create_scatter_plot(
+                y_train, y_train_pred, model_type, self.selected_property,
+                {'r2': train_r2, 'rmse': train_rmse},
+                dataset_label="Training Data"
+            )
+            self.store_analysis_plot(
+                f"{model_type} (Training)", self.selected_property, fig_train)
 
             # Export the figures to a PDF next to the Excel results so a plain
             # single-model run produces the same artifacts as batch / best-combo
@@ -1770,6 +1822,7 @@ class AnalysisMixin:
                     refl = getattr(self, '_reflectance_spectra_fig', None)
                     if refl is not None:
                         pdf.savefig(refl, bbox_inches='tight')
+                    pdf.savefig(fig_train, bbox_inches='tight')
                     pdf.savefig(fig, bbox_inches='tight')
                     pdf.savefig(fig_imp, bbox_inches='tight')
                 plt.close(fig_imp)

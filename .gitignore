@@ -64,3 +64,8 @@ Desktop.ini
 *.pkl
 *_plots.pdf
 *_batch_results.pdf
+
+Publication/
+*.tex
+*.bbl
+*.aus

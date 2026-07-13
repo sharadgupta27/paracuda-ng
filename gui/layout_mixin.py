@@ -827,7 +827,57 @@ class LayoutMixin:
                                             state='readonly', width=40)
         self.viz_model_combo.pack(side="left", padx=5)
         self.viz_model_combo.bind("<<ComboboxSelected>>", self.display_selected_plot)
-        
+
+        # ── Reflectance-spectra view options ──────────────────────────────────
+        # Purely a viewing control: choosing how many spectra to draw (and from
+        # which samples) only redraws the Reflectance Spectra figure - it never
+        # affects the data used for modelling.  The row is shown only while the
+        # "Reflectance Spectra" plot is selected (see display_selected_plot).
+        self.spectra_opts_frame = ttk.Frame(viz_tab)
+
+        # Pack the action button FIRST, anchored right: Tk gives a side="right"
+        # child its space before the left-hand children, so a narrow window
+        # shrinks the option rows instead of clipping the button off-screen.
+        ttk.Button(self.spectra_opts_frame, text="Update Plot",
+                   command=self.refresh_reflectance_plot).pack(side="right", padx=(8, 5))
+
+        # The options themselves stack on two short rows so the whole strip stays
+        # narrow enough for small screens.
+        opts = ttk.Frame(self.spectra_opts_frame)
+        opts.pack(side="left", fill="x", expand=True)
+
+        # Row 1 — how many spectra, and how they are picked.
+        row_a = ttk.Frame(opts)
+        row_a.pack(fill="x")
+        ttk.Label(row_a, text="Spectra to show:").pack(side="left", padx=(5, 2))
+        self.spectra_count_var = tk.StringVar(value="10")
+        ttk.Entry(row_a, textvariable=self.spectra_count_var, width=5).pack(side="left")
+
+        self.spectra_mode_var = tk.StringVar(value="Random")
+        ttk.Radiobutton(row_a, text="Random (all samples)", value="Random",
+                        variable=self.spectra_mode_var,
+                        command=self._sync_spectra_range_state).pack(side="left", padx=(10, 2))
+        ttk.Radiobutton(row_a, text="Within sample range", value="Range",
+                        variable=self.spectra_mode_var,
+                        command=self._sync_spectra_range_state).pack(side="left", padx=2)
+
+        # Row 2 — the sample range (active only in "Within sample range" mode).
+        row_b = ttk.Frame(opts)
+        row_b.pack(fill="x", pady=(3, 0))
+        ttk.Label(row_b, text="From:").pack(side="left", padx=(5, 2))
+        self.spectra_from_var = tk.StringVar(value="1")
+        self.spectra_from_entry = ttk.Entry(
+            row_b, textvariable=self.spectra_from_var, width=6, state='disabled')
+        self.spectra_from_entry.pack(side="left")
+        ttk.Label(row_b, text="To:").pack(side="left", padx=(6, 2))
+        self.spectra_to_var = tk.StringVar(value="")
+        self.spectra_to_entry = ttk.Entry(
+            row_b, textvariable=self.spectra_to_var, width=6, state='disabled')
+        self.spectra_to_entry.pack(side="left")
+        self.spectra_range_hint = ttk.Label(
+            row_b, text="", foreground="#666666", font=('Helvetica', 8, 'italic'))
+        self.spectra_range_hint.pack(side="left", padx=6)
+
         # Visualization display area
         self.viz_display_frame = ttk.Frame(viz_tab)
         self.viz_display_frame.pack(fill="both", expand=True, padx=5, pady=5)
@@ -1414,6 +1464,15 @@ class LayoutMixin:
             return
         disabled = bool(self.find_best_preprocess_var.get())
         self.preprocess_combo.config(state='disabled' if disabled else 'readonly')
+
+    def _sync_spectra_range_state(self):
+        """Enable the From/To sample-range entries only in 'Within sample range' mode."""
+        if not hasattr(self, 'spectra_from_entry'):
+            return
+        on = (self.spectra_mode_var.get() == "Range")
+        state = 'normal' if on else 'disabled'
+        self.spectra_from_entry.config(state=state)
+        self.spectra_to_entry.config(state=state)
 
     def _sync_target_outlier_state(self):
         """Enable the target-outlier method/threshold controls only while the

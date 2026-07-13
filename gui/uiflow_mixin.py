@@ -251,6 +251,17 @@ class UIFlowMixin:
                 for widget in self.viz_display_frame.winfo_children():
                     widget.destroy()
 
+            # Reflectance-spectra view controls back to their defaults.
+            if hasattr(self, 'spectra_opts_frame'):
+                self.spectra_count_var.set("10")
+                self.spectra_mode_var.set("Random")
+                self.spectra_from_var.set("1")
+                self.spectra_to_var.set("")
+                self.spectra_range_hint.config(text="")
+                self._sync_spectra_range_state()
+                self.spectra_opts_frame.pack_forget()
+            self._spectra_seed = 42
+
             # Fade every flow-chart stage again and force a redraw.
             if hasattr(self, '_flow_active_steps'):
                 self._flow_active_steps.clear()
@@ -285,7 +296,16 @@ class UIFlowMixin:
             selected_model = self.viz_model_var.get()
             if not selected_model or selected_model not in self.analysis_plots:
                 return
-            
+
+            # The spectra view controls (count / random / sample range) only make
+            # sense for the Reflectance Spectra figure, so show them just for it.
+            if hasattr(self, 'spectra_opts_frame'):
+                if selected_model == "Reflectance Spectra":
+                    self.spectra_opts_frame.pack(fill="x", padx=10, pady=(0, 5),
+                                                 before=self.viz_display_frame)
+                else:
+                    self.spectra_opts_frame.pack_forget()
+
             # Clear existing plot
             for widget in self.viz_display_frame.winfo_children():
                 widget.destroy()

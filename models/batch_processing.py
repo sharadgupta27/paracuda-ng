@@ -153,10 +153,10 @@ def suggest_best_model(results_dict):
 
 
 def create_scatter_plot(y_true, y_pred, model_name, property_name, metrics, ax=None,
-                        overfitting_flag=False):
+                        overfitting_flag=False, dataset_label="Test Data"):
     """
     Create a scatter plot of observed vs predicted values
-    
+
     Args:
         y_true: True values
         y_pred: Predicted values
@@ -165,7 +165,10 @@ def create_scatter_plot(y_true, y_pred, model_name, property_name, metrics, ax=N
         metrics: Dictionary with 'r2' and 'rmse' keys
         ax: Matplotlib axis (optional)
         overfitting_flag: If True, annotates the title in red to warn of overfitting
-    
+        dataset_label: Which split is plotted - "Test Data" (default) or
+            "Training Data".  Shown in the title so train/test plots are
+            unambiguous side by side.
+
     Returns:
         fig, ax if ax is None, otherwise None
     """
@@ -190,7 +193,8 @@ def create_scatter_plot(y_true, y_pred, model_name, property_name, metrics, ax=N
     # Labels and title
     ax.set_xlabel(f'Observed {property_name}', fontsize=12, fontweight='bold')
     ax.set_ylabel(f'Predicted {property_name}', fontsize=12, fontweight='bold')
-    title = f'{model_name} - {property_name}\nR² = {metrics["r2"]:.3f}, RMSE = {metrics["rmse"]:.3f}'
+    title = (f'{model_name} - {property_name} ({dataset_label})\n'
+             f'R² = {metrics["r2"]:.3f}, RMSE = {metrics["rmse"]:.3f}')
     if overfitting_flag:
         title += '\n⚠ Overfitting Detected'
         ax.set_title(title, fontsize=14, fontweight='bold', color='red')
@@ -210,23 +214,34 @@ def create_scatter_plot(y_true, y_pred, model_name, property_name, metrics, ax=N
     return None
 
 
+# Above this many spectra the per-sample legend stops being readable and starts
+# covering the curves, so it is omitted.
+LEGEND_MAX_SPECTRA = 20
+
+
 def create_reflectance_spectra_plot(X, wavelengths, sample_names=None, n_samples=10,
-                                    wavelength_unit="nm", seed=42, title=None):
+                                    wavelength_unit="nm", seed=42, title=None,
+                                    row_pool=None):
     """Publication-quality reflectance-spectra plot for a random subset of samples.
 
     Draws ``n_samples`` spectra (or all rows when fewer are available) as thin
-    lines over the wavelength axis, coloured with a perceptually-uniform map so
-    the figure reads cleanly in print and grayscale.
+    lines over the wavelength axis, using discrete qualitative colours so
+    individual spectra stay distinguishable.  The per-sample legend is omitted
+    once more than ``LEGEND_MAX_SPECTRA`` lines are drawn, since it would then
+    obscure the curves.
 
     Args:
         X:              2-D array (n_rows, n_bands) of reflectance values.
         wavelengths:    sequence of band-centre wavelengths (len == n_bands).
         sample_names:   optional per-row labels used for the legend.
-        n_samples:      number of rows to draw at random (capped at n_rows).
+        n_samples:      number of rows to draw at random (capped at the pool size).
         wavelength_unit: axis unit label ("nm" or "μm").
         seed:           RNG seed so the GUI figure and the exported PDF show the
                         SAME random samples.
         title:          optional title override.
+        row_pool:       optional row indices the random draw may pick from.  ``None``
+                        (default) means every row is eligible; pass a subset to
+                        restrict the draw to a specific range of samples.
 
     Returns:
         matplotlib Figure.
@@ -242,15 +257,27 @@ def create_reflectance_spectra_plot(X, wavelengths, sample_names=None, n_samples
     X = X[:, order]
 
     n_rows = X.shape[0]
-    k = int(min(max(int(n_samples), 1), n_rows))
+    if row_pool is None:
+        pool = np.arange(n_rows)
+    else:
+        pool = np.asarray([int(i) for i in np.asarray(row_pool).ravel()
+                           if 0 <= int(i) < n_rows], dtype=int)
+        if pool.size == 0:
+            raise ValueError("The selected sample range contains no valid samples.")
+
+    k = int(min(max(int(n_samples), 1), pool.size))
     rng = np.random.default_rng(seed)
-    idx = np.sort(rng.choice(n_rows, size=k, replace=False))
+    idx = np.sort(rng.choice(pool, size=k, replace=False))
 
     fig = Figure(figsize=(9, 5.5))
     ax = fig.add_subplot(111)
 
-    cmap = plt.get_cmap('viridis')
-    colors = cmap(np.linspace(0.05, 0.95, k))
+    # Discrete qualitative colours - a continuous gradient (viridis) makes
+    # neighbouring spectra blend into one another, so cycle through high-contrast
+    # categorical palettes instead (30 distinct hues before repeating).
+    discrete = list(plt.get_cmap('tab10').colors) + list(plt.get_cmap('tab20b').colors)
+    colors = [discrete[j % len(discrete)] for j in range(k)]
+
     for j, row in enumerate(idx):
         if sample_names is not None and row < len(sample_names):
             label = str(sample_names[row])
@@ -264,10 +291,13 @@ def create_reflectance_spectra_plot(X, wavelengths, sample_names=None, n_samples
                  fontsize=13, fontweight='bold')
     ax.grid(True, which='major', alpha=0.25, linewidth=0.6)
     ax.margins(x=0.01)
-    for spine in ('top', 'right'):
-        ax.spines[spine].set_visible(False)
     ax.tick_params(labelsize=10)
-    ax.legend(fontsize=8, ncol=2, frameon=False, loc='best')
+
+    # Beyond ~20 lines the legend crowds out the plot itself, so drop it and note
+    # the sample count in the title area instead.
+    if k <= LEGEND_MAX_SPECTRA:
+        ax.legend(fontsize=8, ncol=2, frameon=False, loc='best')
+
     fig.tight_layout()
     return fig
 
@@ -405,9 +435,22 @@ def save_batch_plots(results_dict, output_folder, property_name):
     
     with PdfPages(pdf_path) as pdf:
         for model_name, results in results_dict.items():
-            # Scatter plot
+            # Training scatter (when the result carries train predictions)
+            if results.get('y_train') is not None and results.get('y_train_pred') is not None:
+                fig, ax = create_scatter_plot(
+                    results['y_train'],
+                    results['y_train_pred'],
+                    model_name,
+                    property_name,
+                    {'r2': results['train_r2'], 'rmse': results['train_rmse']},
+                    dataset_label="Training Data"
+                )
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+
+            # Test scatter plot
             fig, ax = create_scatter_plot(
-                results['y_test'], 
+                results['y_test'],
                 results['y_pred'],
                 model_name,
                 property_name,

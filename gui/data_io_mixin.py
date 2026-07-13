@@ -158,10 +158,70 @@ class DataIOMixin:
             self.status_text.insert(tk.END, "="*50 + "\n")
             self.status_text.see(tk.END)
     
+    def _get_spectra_selection(self, n_rows):
+        """Resolve the Visualization spectra controls into (n_samples, row_pool, note).
+
+        ``row_pool`` is the set of row indices the random draw may pick from:
+        ``None`` (every sample) in "Random" mode, or just the user's 1-based
+        From/To sample range in "Within sample range" mode.  Bad or empty entries
+        fall back to the full dataset rather than raising.
+        """
+        try:
+            n_samples = int(float(self.spectra_count_var.get()))
+        except (AttributeError, ValueError, tk.TclError):
+            n_samples = 10
+        n_samples = max(1, min(n_samples, n_rows))
+
+        mode_var = getattr(self, 'spectra_mode_var', None)
+        if mode_var is None or mode_var.get() != "Range":
+            return n_samples, None, f"{n_samples} random of {n_rows} samples"
+
+        def _read(var, default):
+            try:
+                return int(float(var.get()))
+            except (ValueError, tk.TclError):
+                return default
+
+        lo = min(max(_read(self.spectra_from_var, 1), 1), n_rows)
+        hi = min(max(_read(self.spectra_to_var, n_rows), 1), n_rows)
+        if lo > hi:
+            lo, hi = hi, lo
+
+        pool = np.arange(lo - 1, hi)  # 1-based inclusive -> 0-based indices
+        n_samples = min(n_samples, pool.size)
+        note = f"{n_samples} of samples {lo}-{hi}"
+        return n_samples, pool, note
+
+    def refresh_reflectance_plot(self):
+        """Redraw the Reflectance Spectra figure from the Visualization controls.
+
+        Each press re-seeds the RNG, so "Random" genuinely draws a different
+        subset every time.  Purely a viewing action - nothing here touches the
+        data used for modelling.
+        """
+        if self.df is None or not self.wavelengths:
+            messagebox.showinfo(
+                "Reflectance Spectra",
+                "Load a dataset with spectral columns first.")
+            return
+        # Fresh seed so a repeated "Random" press shows a new subset. The cached
+        # figure is the same object the PDF export reuses, so the two stay in sync.
+        self._spectra_seed = int(np.random.SeedSequence().generate_state(1)[0])
+        self._build_reflectance_spectra_plot()
+
+        key = "Reflectance Spectra"
+        if key in getattr(self, 'analysis_plots', {}):
+            self.viz_model_var.set(key)
+            self.display_selected_plot()
+
     def _build_reflectance_spectra_plot(self):
-        """Build a publication-quality reflectance-spectra plot for 10 random
-        samples, cache it on ``self._reflectance_spectra_fig`` (so PDF exports can
-        reuse the exact same figure) and show it in the Visualization tab.
+        """Build a publication-quality reflectance-spectra plot, cache it on
+        ``self._reflectance_spectra_fig`` (so PDF exports reuse the exact same
+        figure) and show it in the Visualization tab.
+
+        How many spectra are drawn - and whether they are picked from the whole
+        dataset or from a specific sample range - comes from the Visualization
+        tab's spectra controls (defaults: 10, random).
 
         Uses the raw loaded reflectance (before any preprocessing/resampling).
         A no-op when there is no spectral data.  Never raises into the caller.
@@ -183,10 +243,21 @@ class DataIOMixin:
             if 'Names' in self.df.columns:
                 names = list(self.df['Names'].values[valid])
 
+            n_rows = X.shape[0]
+            n_samples, row_pool, note = self._get_spectra_selection(n_rows)
+
+            # Keep the range controls honest about how many samples actually exist.
+            if hasattr(self, 'spectra_range_hint'):
+                self.spectra_range_hint.config(text=f"(1–{n_rows} available)")
+            if getattr(self, 'spectra_to_var', None) is not None and not self.spectra_to_var.get():
+                self.spectra_to_var.set(str(n_rows))
+
             fig = create_reflectance_spectra_plot(
-                X, self.wavelengths, sample_names=names, n_samples=10,
+                X, self.wavelengths, sample_names=names, n_samples=n_samples,
                 wavelength_unit=self.wavelength_unit,
-                title=f"Reflectance Spectra — {self.input_filename}")
+                seed=getattr(self, '_spectra_seed', 42),
+                row_pool=row_pool,
+                title=f"Reflectance Spectra — {self.input_filename}\n{note}")
             self._reflectance_spectra_fig = fig
             self.store_analysis_plot("Reflectance Spectra", "Dataset", fig,
                                      item_type="spectra")

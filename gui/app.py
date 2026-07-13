@@ -102,7 +102,8 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
         self.custom_fwhm_table = None    # (centers, fwhms) from an uploaded FWHM CSV
         self.srf_table = None            # {center: (wl, response)} from an SRF CSV
         self.exclude_ranges = []         # [(lo, hi), ...] nm ranges to omit
-        self._reflectance_spectra_fig = None  # cached 10-sample reflectance plot (for PDF export)
+        self._reflectance_spectra_fig = None  # cached reflectance plot (for PDF export)
+        self._spectra_seed = 42               # RNG seed for the spectra subset (re-rolled on Update Plot)
 
         # Wavelength unit and spectral domain (set during load_excel)
         self.wavelength_unit = "nm"          # "nm" or "μm"
