@@ -133,9 +133,14 @@ class AnalysisMixin:
             messagebox.showerror("Resampling not feasible", str(e))
             return False
 
-    def run_best_preprocessing_search(self, property_name, models_to_run):
+    def run_best_preprocessing_search(self, property_name, models_to_run,
+                                      progress_base=0.0, progress_span=80.0):
         """Evaluate every preprocessing method (× every model in models_to_run) for a
         single property and return the best (preprocessing, model) combination ranked by R².
+
+        ``progress_base`` / ``progress_span`` let a caller map this search onto a
+        slice of the overall progress bar, so a multi-property run advances once
+        through 0-100 instead of restarting the bar for every property.
 
         Returns:
             best_preprocess (str): Name of the best preprocessing method.
@@ -158,7 +163,7 @@ class AnalysisMixin:
 
             for model_name in models_to_run:
                 combo_idx += 1
-                progress_base = (combo_idx - 1) / n_combos * 80  # reserve last 20 % for reporting
+                combo_base = progress_base + (combo_idx - 1) / n_combos * progress_span
                 self.status_text.insert(
                     tk.END,
                     f"  [{combo_idx}/{n_combos}] {pp_method} + {model_name} ... "
@@ -169,7 +174,7 @@ class AnalysisMixin:
                 try:
                     result = self.run_single_model_analysis(
                         property_name, model_name,
-                        progress_base, 80 / n_combos,
+                        combo_base, progress_span / n_combos,
                         override_preprocess=pp_method,
                         override_preprocess_kwargs=pp_kwargs
                     )
@@ -342,6 +347,20 @@ class AnalysisMixin:
         except Exception as exc:
             self.append_status(f"  ⚠ Best-combo export failed: {exc}\n")
 
+    def _filtered_column_indices(self):
+        """Column indices of ``self.wavelengths`` kept by the wavelength filter.
+
+        Selects by MEMBERSHIP in ``self.filtered_wavelengths`` — NOT by a
+        min/max span.  Excluded interior regions (water-absorption bands, noisy
+        edges) sit *between* the min and max, so a span test silently keeps them
+        in X while ``filtered_wavelengths`` has already dropped them.  X would
+        then carry more columns than the grid describing it, and every later
+        resample / correlation call would fail on the length mismatch.
+        """
+        src = np.asarray([float(w) for w in self.wavelengths], dtype=float)
+        keep = np.asarray([float(w) for w in self.filtered_wavelengths], dtype=float)
+        return np.nonzero(np.isin(src, keep))[0].tolist()
+
     def _create_train_scatter(self, result, model_label, property_name):
         """Build the TRAINING-set scatter figure for a result dict.
 
@@ -357,6 +376,36 @@ class AnalysisMixin:
             {'r2': result['train_r2'], 'rmse': result['train_rmse']},
             dataset_label="Training Data")
         return fig
+
+    def _print_best_preprocess_winners(self, winners):
+        """Print the winning preprocessing + model per property after a
+        multi-property 'Find Best Preprocessing' run."""
+        if not winners:
+            self.append_status(
+                "\n⚠ Find Best Preprocessing: no property produced a usable "
+                "combination.\n")
+            return
+
+        def _fmt(v, width=9, prec=4):
+            try:
+                if v is None or (isinstance(v, float) and not np.isfinite(v)):
+                    return f"{'-':>{width}}"
+                return f"{float(v):>{width}.{prec}f}"
+            except (TypeError, ValueError):
+                return f"{'-':>{width}}"
+
+        self.append_status("\n" + "═" * 82 + "\n")
+        self.append_status("BEST PREPROCESSING PER PROPERTY:\n")
+        self.append_status(
+            f"{'Property':<20} {'Preprocessing':<24} {'Model':<16} "
+            f"{'Test R2':>9} {'Test RMSE':>10}\n")
+        self.append_status("─" * 82 + "\n")
+        for w in winners:
+            self.append_status(
+                f"{str(w['Property'])[:20]:<20} {str(w['Preprocessing'])[:24]:<24} "
+                f"{str(w['Model'])[:16]:<16} "
+                f"{_fmt(w['Test_R2'])} {_fmt(w['Test_RMSE'], 10)}\n")
+        self.append_status("═" * 82 + "\n\n")
 
     def _print_batch_summary_table(self, property_name, comparison_df):
         """Print a ranked summary table (Train/Test R², RMSE, CV, overfitting) for a
@@ -394,6 +443,7 @@ class AnalysisMixin:
         """Public entry: run batch analysis with the window pinned and busy-guarded."""
         if getattr(self, '_batch_running', False):
             return
+        self._show_status_tab()
         self.set_busy_state(True)
         self._pin_geometry()
         try:
@@ -508,45 +558,107 @@ class AnalysisMixin:
             
             properties_to_run = self.selected_properties
 
-            # ── Find Best Preprocessing (single property only) ──────────────
-            if (getattr(self, 'find_best_preprocess_var', tk.BooleanVar()).get()
-                    and len(properties_to_run) == 1):
-                best_pp, best_mdl, _search_results = self.run_best_preprocessing_search(
-                    properties_to_run[0], models_to_run
-                )
-                if best_pp is None:
-                    return  # search failed - message already shown
-                # Re-run the winning combo once more to obtain the full result
-                # (predictions, correlations, trained model) needed for export.
-                # Tune it when the Tune-Hyperparameters checkbox is on.
-                do_tune = bool(best_mdl and getattr(self, 'tune_hyperparams_var', None)
-                               and self.tune_hyperparams_var.get())
-                if do_tune:
-                    self.status_text.insert(
-                        tk.END, f"\n⚙ Tuning best combo: {best_pp} + {best_mdl}\n")
-                    self.status_text.see(tk.END)
-                    self.update()
-                best_result = self.run_single_model_analysis(
-                    properties_to_run[0], best_mdl, 90, 5,
-                    override_preprocess=best_pp,
-                    override_preprocess_kwargs=self._get_default_preprocess_kwargs(best_pp),
-                    tune=do_tune)
-                # Export the winning combo's Excel + figures for the record.
-                if best_result:
+            # Be explicit about the Save Model button: with several properties each
+            # one trains its own model, and the saved-model state can only hold a
+            # single one, so saving is disabled. Users otherwise just see a greyed
+            # button with no explanation.
+            if len(properties_to_run) > 1:
+                self.status_text.insert(
+                    tk.END,
+                    "\nℹ Save Model is disabled for multi-property runs: each property "
+                    "trains its own model and a saved model file holds only one.\n"
+                    "  Results (Excel + plots) are still exported for every property.\n"
+                    "  To save a model, re-run with a single property selected.\n")
+                self.status_text.see(tk.END)
+
+            # ── Find Best Preprocessing ─────────────────────────────────────
+            # The preprocessing × model search runs independently for EVERY
+            # selected property: each property gets its own winning combination
+            # (the best preprocessing for clay is not necessarily the best for
+            # sand).  Each property owns a slice of the progress bar.
+            if getattr(self, 'find_best_preprocess_var', tk.BooleanVar()).get():
+                n_props = len(properties_to_run)
+                multi = n_props > 1
+                winners = []
+
+                for prop_idx, property_name in enumerate(properties_to_run):
+                    # Progress slice for this property: 85 % search, 15 % winner re-run.
+                    slice_start = prop_idx / n_props * 100
+                    slice_span = 100 / n_props
+                    search_span = slice_span * 0.85
+
+                    if multi:
+                        self.status_text.insert(
+                            tk.END,
+                            f"\n{'─' * 60}\n"
+                            f"PROPERTY {prop_idx + 1}/{n_props}: {property_name}\n")
+                        self.status_text.see(tk.END)
+                        self.update()
+
+                    best_pp, best_mdl, _search_results = self.run_best_preprocessing_search(
+                        property_name, models_to_run,
+                        progress_base=slice_start, progress_span=search_span)
+
+                    if best_pp is None:
+                        # Search failed for this property — message already shown.
+                        # In a multi-property run keep going with the others.
+                        if not multi:
+                            return
+                        self.status_text.insert(
+                            tk.END, f"  ↳ Skipped {property_name}: no usable combination.\n")
+                        self.status_text.see(tk.END)
+                        continue
+
+                    # Re-run the winning combo once more to obtain the full result
+                    # (predictions, correlations, trained model) needed for export.
+                    # Tune it when the Tune-Hyperparameters checkbox is on.
+                    do_tune = bool(best_mdl and getattr(self, 'tune_hyperparams_var', None)
+                                   and self.tune_hyperparams_var.get())
+                    if do_tune:
+                        self.status_text.insert(
+                            tk.END, f"\n⚙ Tuning best combo: {best_pp} + {best_mdl}\n")
+                        self.status_text.see(tk.END)
+                        self.update()
+
+                    best_result = self.run_single_model_analysis(
+                        property_name, best_mdl,
+                        slice_start + search_span, slice_span - search_span,
+                        override_preprocess=best_pp,
+                        override_preprocess_kwargs=self._get_default_preprocess_kwargs(best_pp),
+                        tune=do_tune)
+
+                    if not best_result:
+                        if not multi:
+                            self.save_model_btn.config(state='disabled')
+                        continue
+
+                    # Export the winning combo's Excel + figures for the record.
                     self._export_best_combo_results(
-                        properties_to_run[0], best_pp, best_mdl, best_result)
-                    # Promote the winning (preprocessing + model, tuned if enabled)
-                    # combination to saveable state so it can be saved like a plain
-                    # single run — including the winning preprocessing method and
-                    # hyper-parameters, regardless of Auto-Select settings.
-                    self._promote_result_to_saveable(
-                        best_result, properties_to_run[0], model_label=best_mdl)
-                    self.status_text.insert(
-                        tk.END, f"\n💾 Best combo ready to save: {best_pp} + {best_mdl} "
-                                f"for {properties_to_run[0]} (use the Save button).\n")
-                    self.status_text.see(tk.END)
-                else:
-                    self.save_model_btn.config(state='disabled')
+                        property_name, best_pp, best_mdl, best_result)
+                    winners.append({
+                        'Property': property_name,
+                        'Preprocessing': best_pp,
+                        'Model': best_mdl,
+                        'Test_R2': best_result.get('test_r2', float('-inf')),
+                        'Test_RMSE': best_result.get('test_rmse', float('inf')),
+                    })
+
+                    # A single-property run has one unambiguous winner, so promote it
+                    # to saveable state (winning preprocessing + hyper-parameters), as
+                    # a plain single run would.  With several properties each has its
+                    # OWN winner and `save_model` can only hold one, so the Save button
+                    # stays off — exactly as in a normal multi-property batch run.
+                    if not multi:
+                        self._promote_result_to_saveable(
+                            best_result, property_name, model_label=best_mdl)
+                        self.status_text.insert(
+                            tk.END, f"\n💾 Best combo ready to save: {best_pp} + {best_mdl} "
+                                    f"for {property_name} (use the Save button).\n")
+                        self.status_text.see(tk.END)
+
+                if multi:
+                    self._print_best_preprocess_winners(winners)
+
                 # The search already ran all preprocessing × model combinations and
                 # printed the ranking table. No need to re-run batch analysis.
                 self.update_progress(100, "Best preprocessing search complete!")
@@ -847,11 +959,9 @@ class AnalysisMixin:
             X = self.df[self.wavelengths].values
             y = self.df[property_name].values
             
-            # Apply wavelength filtering
-            wavelength_indices = [i for i, w in enumerate(self.wavelengths)
-                                if float(w) >= min(self.filtered_wavelengths)
-                                and float(w) <= max(self.filtered_wavelengths)]
-            X = X[:, wavelength_indices]
+            # Apply wavelength filtering (membership, so excluded interior bands
+            # such as the water-absorption regions are really dropped from X).
+            X = X[:, self._filtered_column_indices()]
 
             # Handle missing/empty values (NaN/Inf) before resampling/preprocessing.
             try:
@@ -1209,9 +1319,8 @@ class AnalysisMixin:
             # Build spectra X and composition Y
             X = self.df[self.wavelengths].values.astype(float)
             Y = self.df[parts].values.astype(float)
-            wl_idx = [i for i, w in enumerate(self.wavelengths)
-                      if min(self.filtered_wavelengths) <= float(w) <= max(self.filtered_wavelengths)]
-            X = X[:, wl_idx]
+            # Membership, not a min/max span — see _filtered_column_indices.
+            X = X[:, self._filtered_column_indices()]
 
             # Joint clean: keep rows finite in X and all parts, with a positive sum.
             good = (np.all(np.isfinite(X), axis=1) & np.all(np.isfinite(Y), axis=1)
@@ -1358,6 +1467,7 @@ class AnalysisMixin:
         """Public entry: run single-model analysis with the window pinned and busy-guarded."""
         if getattr(self, '_batch_running', False):
             return
+        self._show_status_tab()
         self.set_busy_state(True)
         self._pin_geometry()
         try:
@@ -1397,13 +1507,20 @@ class AnalysisMixin:
                     messagebox.showwarning("Warning", "Please load an Excel file first")
                     return
                 try:
-                    self.resample_method = (self.resample_method_var.get()
-                                        if self.resampling_var.get() == "Yes"
-                                        else "Interpolation")
+                    # Mirror the batch path exactly: normalise the method label and
+                    # pass the excluded ranges / custom FWHMs. Omitting
+                    # exclude_ranges here silently ignored the user's water-band
+                    # exclusions for the whole search.
+                    self.resample_method = normalize_resample_method(
+                        self.resample_method_var.get()
+                        if self.resampling_var.get() == "Yes"
+                        else "Linear Interpolation")
                     self.filtered_wavelengths, self.new_wavelengths, self.new_fwhms = filter_wavelengths(
                         self.wavelengths, self.min_wave_var.get(), self.max_wave_var.get(),
                         self.resampling_var.get(), self.spacing_var.get(),
                         sensor=self.sensor_var.get(), resample_method=self.resample_method,
+                        exclude_ranges=self._get_exclude_ranges(),
+                        custom_fwhm=self.custom_fwhm_table,
                         **self._binning_kwargs()
                     )
                 except Exception as e:
@@ -1469,11 +1586,9 @@ class AnalysisMixin:
             X = self.df[self.wavelengths].values
             y = self.df[self.selected_property].values
             
-            # Apply wavelength filtering
-            wavelength_indices = [i for i, w in enumerate(self.wavelengths)
-                                if float(w) >= min(self.filtered_wavelengths)
-                                and float(w) <= max(self.filtered_wavelengths)]
-            X = X[:, wavelength_indices]
+            # Apply wavelength filtering (membership, so excluded interior bands
+            # such as the water-absorption regions are really dropped from X).
+            X = X[:, self._filtered_column_indices()]
 
             # Handle missing/empty values (NaN/Inf) before any resampling or
             # preprocessing, using the user-selected strategy.

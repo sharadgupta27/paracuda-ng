@@ -383,7 +383,7 @@ class FlowChartMixin:
             except Exception:
                 pass
         try:
-            self._flow_refresh_job = self.after(150, self._do_flow_refresh)
+            self._flow_refresh_job = self.after(400, self._do_flow_refresh)
         except Exception:
             self._do_flow_refresh()
 
@@ -450,14 +450,25 @@ class FlowChartMixin:
             if hasattr(self, 'status_text'):
                 self.status_text.insert(tk.END, f"Flow chart error: {e}\n")
             return
-        # Replace the previous canvas.
-        old = getattr(self, 'flow_preview_canvas', None)
-        if old is not None:
-            try:
-                old.get_tk_widget().destroy()
-            except Exception:
-                pass
+        old_fig = getattr(self, 'flow_preview_fig', None)
+        canvas = getattr(self, 'flow_preview_canvas', None)
         self.flow_preview_fig = fig
+        if canvas is not None:
+            # Reuse the existing embedded widget -- destroying and recreating
+            # the Tk canvas on every keystroke (min/max wave, etc.) is what
+            # was stalling the event loop and eating typed characters.
+            try:
+                canvas.figure = fig
+                canvas.draw()
+                if old_fig is not None:
+                    plt.close(old_fig)
+                return
+            except Exception:
+                try:
+                    canvas.get_tk_widget().destroy()
+                except Exception:
+                    pass
+                self.flow_preview_canvas = None
         self.flow_preview_canvas = FigureCanvasTkAgg(fig, holder)
         self.flow_preview_canvas.draw()
         self.flow_preview_canvas.get_tk_widget().pack(fill="both", expand=True)

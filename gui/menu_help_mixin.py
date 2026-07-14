@@ -6,6 +6,54 @@ Menu bar, Help window, About dialog and info popups.
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
+# ── Software metadata (keep in sync with README.md) ────────────────────────────
+PARACUDA_AUTHOR = "Sharad Kumar Gupta"
+PARACUDA_REPO_URL = "https://github.com/sharadgupta27/paracuda"
+PARACUDA_CONTACT = "sharadgupta27@gmail.com"
+PARACUDA_LICENSE = "Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0)"
+
+# ── What's New — changes since the last release ────────────────────────────────
+# Newest release first. Each entry: (heading, [bullet, ...]).
+WHATS_NEW = [
+    ("Performance", [
+        "Typing in the Min/Max Wave fields no longer stutters - the live "
+        "process-flow preview used to rebuild itself on every keystroke, which "
+        "could stall the window and drop characters.",
+        "Batch runs no longer redo Target Variable Outlier Removal for every "
+        "model - it is now computed once per property and reused, instead of "
+        "being recomputed (and re-logged) for each model in the batch.",
+    ]),
+    ("Preprocessing", [
+        "New Target Variable Outlier Removal: drops samples whose selected "
+        "property value (e.g. clay) is a z-score or IQR outlier. Enable it with "
+        "the checkbox in Step 3 - Preprocessing.",
+        "Find Best Preprocessing now works with several properties selected at "
+        "once. Each property is searched independently and gets its own winning "
+        "preprocessing + model, with a summary table at the end.",
+    ]),
+    ("Plots & Visualization", [
+        "Training-data scatter plots are now produced alongside the test "
+        "scatter, both in the Visualization tab and in the exported PDF. Titles "
+        "name the split ('Training Data' / 'Test Data').",
+        "The Reflectance Spectra viewer lets you choose how many spectra to "
+        "show - drawn at random, or from a specific sample range.",
+        "Spectra are drawn with discrete colours instead of a gradient, so "
+        "individual curves stay distinguishable.",
+        "The per-sample legend is omitted above 20 spectra, where it covered "
+        "the curves.",
+        "All plots now draw the full box (top and right axes).",
+    ]),
+    ("Usability", [
+        "Starting a Run or Batch Run automatically switches to the Status & Log "
+        "tab, so progress is visible as it happens.",
+        "The log now explains why Save Model is disabled for multi-property "
+        "runs instead of leaving the button greyed out without a reason.",
+        "Help -> About Paracuda III now shows the creator, a link to the source "
+        "code, and contact information.",
+    ]),
+]
+
+
 class MenuHelpMixin:
     
     def create_menu(self):
@@ -46,34 +94,15 @@ class MenuHelpMixin:
                               command=self.show_help)
         help_menu.add_separator()
 
-        # Quick-access topic shortcuts
+        # Entry-point topics worth a direct shortcut. Everything else (tabular
+        # prediction, resampling, image processing, harmonization, baseline
+        # correction, missing data, hyperparameter tuning, the flow chart,
+        # model portability, overfitting, ...) is a keyword away inside
+        # "Ask Help Assistant" itself, so it does not need its own menu entry.
         help_menu.add_command(label="📖 Getting Started",
                               command=lambda: self.show_help_topic("getting_started"))
         help_menu.add_command(label="📂 Loading Data",
                               command=lambda: self.show_help_topic("data_loading"))
-        help_menu.add_command(label="🔮 Tabular Prediction (Unknown Samples)",
-                              command=lambda: self.show_help_topic("tabular_prediction"))
-        help_menu.add_command(label="🛰 Resampling & Sensor Bands",
-                              command=lambda: self.show_help_topic("resampling"))
-        help_menu.add_command(label="🗺️ Hyperspectral Image Processing",
-                              command=lambda: self.show_help_topic("image_processing"))
-        help_menu.add_command(label="🔗 Spectral Harmonization",
-                              command=lambda: self.show_help_topic("spectral_harmonization"))
-        help_menu.add_command(label="🎲 Data Randomization & Integrity Tests",
-                              command=lambda: self.show_help_topic("data_randomization"))
-        help_menu.add_command(label="📊 Baseline Correction",
-                              command=lambda: self.show_help_topic("baseline_correction"))
-        help_menu.add_command(label="🧩 Missing Data Handling",
-                              command=lambda: self.show_help_topic("missing_data"))
-        help_menu.add_command(label="⚙️ Hyperparameter Tuning (Optuna)",
-                              command=lambda: self.show_help_topic("hyperparameter_tuning"))
-        help_menu.add_command(label="🧭 Model Development Flow Chart",
-                              command=lambda: self.show_help_topic("model_development_flow"))
-        help_menu.add_command(label="💾 Model Portability (Save/Load)",
-                              command=lambda: self.show_help_topic("model_portability"))
-        help_menu.add_command(label="⚠️ Overfitting Detection",
-                              command=lambda: self.show_help_topic("overfitting"))
-        help_menu.add_separator()
         help_menu.add_command(label="🗺️ Complete Workflow Guide",
                               command=lambda: self.show_help_topic("workflow"))
         help_menu.add_command(label="✅ Best Practices",
@@ -81,6 +110,8 @@ class MenuHelpMixin:
         help_menu.add_command(label="🛠 Troubleshooting",
                               command=lambda: self.show_help_topic("troubleshooting"))
         help_menu.add_separator()
+        help_menu.add_command(label="🆕 What's New",
+                              command=self.show_whats_new)
         help_menu.add_command(label="ℹ️ About Paracuda III",
                               command=self.show_about)
 
@@ -144,19 +175,32 @@ class MenuHelpMixin:
         except Exception:
             self.show_help()
 
+    def _add_link_label(self, parent, text, url, **grid_kw):
+        """A clickable, link-styled label that opens ``url`` in the browser."""
+        import webbrowser
+
+        link = ttk.Label(parent, text=text, foreground="#1a6fb5",
+                         font=('Helvetica', 10, 'underline'), cursor="hand2")
+        link.grid(**grid_kw)
+        link.bind("<Button-1>", lambda _e: webbrowser.open_new(url))
+        return link
+
     def show_about(self):
-        """Show About dialog with version and credits."""
+        """Show About dialog: what the software is, who made it, and how to reach them."""
         win = tk.Toplevel(self)
         win.title("About Paracuda III")
         win.resizable(False, False)
+        win.transient(self)
         frm = ttk.Frame(win, padding=24)
-        frm.pack()
+        frm.pack(fill="both", expand=True)
+
         ttk.Label(frm, text="Paracuda III", font=('Helvetica', 18, 'bold')).pack()
-        ttk.Label(frm, text="Spectral Analysis & Soil Property Prediction",
+        ttk.Label(frm, text="Spectral Analysis Tool",
                   font=('Helvetica', 11)).pack(pady=(2, 12))
+
         about_text = (
             "Paracuda III is a hyperspectral data analysis platform\n"
-            "for soil and environmental science.\n\n"
+            "for soil, vegetation, and other spectroscopy data.\n\n"
             "Features:\n"
             "  • Multi-model regression (PLS, RF, XGBoost, SVR, Ridge, …)\n"
             "  • Cross-validation with overfitting detection\n"
@@ -167,10 +211,78 @@ class MenuHelpMixin:
             "  • Spectral harmonization / transfer functions\n"
             "  • Data integrity & randomization tests\n"
             "  • Portable model files with preprocessing\n\n"
-            "Developed for applied soil spectroscopy research."
+            "Developed for applied spectroscopy research."
         )
-        ttk.Label(frm, text=about_text, justify="left").pack()
+        ttk.Label(frm, text=about_text, justify="left").pack(anchor="w")
+
+        ttk.Separator(frm, orient='horizontal').pack(fill='x', pady=14)
+
+        # ── Creator, source code, contact ──────────────────────────────────
+        info = ttk.Frame(frm)
+        info.pack(anchor="w", fill="x")
+
+        ttk.Label(info, text="Created by:", font=('Helvetica', 10, 'bold')).grid(
+            row=0, column=0, sticky="w", padx=(0, 12), pady=2)
+        ttk.Label(info, text=PARACUDA_AUTHOR, font=('Helvetica', 10)).grid(
+            row=0, column=1, sticky="w", pady=2)
+
+        ttk.Label(info, text="Source code:", font=('Helvetica', 10, 'bold')).grid(
+            row=1, column=0, sticky="w", padx=(0, 12), pady=2)
+        self._add_link_label(info, PARACUDA_REPO_URL, PARACUDA_REPO_URL,
+                             row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(info, text="Contact:", font=('Helvetica', 10, 'bold')).grid(
+            row=2, column=0, sticky="w", padx=(0, 12), pady=2)
+        self._add_link_label(info, PARACUDA_CONTACT, f"mailto:{PARACUDA_CONTACT}",
+                             row=2, column=1, sticky="w", pady=2)
+
+        ttk.Label(info, text="Licence:", font=('Helvetica', 10, 'bold')).grid(
+            row=3, column=0, sticky="w", padx=(0, 12), pady=2)
+        ttk.Label(info, text=PARACUDA_LICENSE, font=('Helvetica', 9),
+                  wraplength=380, justify="left").grid(
+            row=3, column=1, sticky="w", pady=2)
+
         ttk.Button(frm, text="Close", command=win.destroy).pack(pady=(16, 0))
+
+    def show_whats_new(self):
+        """Show the What's New dialog: changes since the last release, as bullets."""
+        win = tk.Toplevel(self)
+        win.title("What's New — Paracuda III")
+        win.geometry("640x520")
+        win.minsize(520, 380)
+        win.transient(self)
+
+        frm = ttk.Frame(win, padding=16)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="What's New", font=('Helvetica', 16, 'bold')).pack(anchor="w")
+        ttk.Label(frm, text="Changes since the last release",
+                  font=('Helvetica', 10), foreground="#666666").pack(anchor="w", pady=(2, 10))
+
+        body = ttk.Frame(frm)
+        body.pack(fill="both", expand=True)
+        scroll = ttk.Scrollbar(body, orient="vertical")
+        scroll.pack(side="right", fill="y")
+
+        txt = tk.Text(body, wrap="word", yscrollcommand=scroll.set,
+                      font=('Segoe UI', 10), padx=10, pady=10,
+                      relief="flat", borderwidth=1, highlightthickness=1,
+                      highlightbackground="#d0d0d0")
+        txt.pack(side="left", fill="both", expand=True)
+        scroll.config(command=txt.yview)
+
+        txt.tag_configure("heading", font=('Segoe UI', 11, 'bold'),
+                          spacing1=10, spacing3=4)
+        txt.tag_configure("bullet", lmargin1=14, lmargin2=30, spacing3=4)
+
+        for heading, bullets in WHATS_NEW:
+            txt.insert(tk.END, f"{heading}\n", "heading")
+            for bullet in bullets:
+                txt.insert(tk.END, f"•  {bullet}\n", "bullet")
+
+        txt.config(state="disabled")  # read-only
+
+        ttk.Button(frm, text="Close", command=win.destroy).pack(pady=(12, 0))
     
     def show_help(self, prefill_topic: str = None):
         """Show interactive help dialog with AI assistant"""

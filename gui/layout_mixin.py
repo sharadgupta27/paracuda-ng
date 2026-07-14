@@ -157,7 +157,7 @@ class LayoutMixin:
         self.preprocess_params_frame = ttk.Frame(preprocess_frame)
         self.preprocess_params_frame.pack(fill="both", expand=True, pady=5)
 
-        # Find Best Preprocessing option (single-property only)
+        # Find Best Preprocessing option (searches each selected property)
         self.find_best_preprocess_var = tk.BooleanVar(value=False)
         self.find_best_preprocess_checkbox = ttk.Checkbutton(
             preprocess_frame,
@@ -793,7 +793,10 @@ class LayoutMixin:
         self.data_display_text.config(state='disabled')
         
         # Tab 2: Status/Log
+        # Kept on self so a starting run can raise this tab by widget reference
+        # (see _show_status_tab) rather than a brittle hard-coded tab index.
         status_tab = ttk.Frame(self.display_notebook)
+        self.status_tab = status_tab
         self.display_notebook.add(status_tab, text="📝 Status & Log")
         
         status_frame = ttk.Frame(status_tab)
@@ -1376,7 +1379,7 @@ class LayoutMixin:
                         else:
                             widget_info['widget'].config(state='normal')
 
-        # Re-evaluate Find Best Preprocessing state (single property required)
+        # Re-evaluate Find Best Preprocessing state (needs >= 1 property selected)
         self._update_best_preprocess_state()
     
     def select_models(self):
@@ -1447,13 +1450,17 @@ class LayoutMixin:
             messagebox.showerror("Error", f"Failed to select models: {str(e)}")
     
     def _update_best_preprocess_state(self):
-        """Enable 'Find Best Preprocessing' only when a single property is selected."""
+        """Enable 'Find Best Preprocessing' whenever at least one property is selected.
+
+        The search runs per property, so several properties can be searched in one
+        go - each gets its own winning preprocessing + model combination.
+        """
         if not hasattr(self, 'find_best_preprocess_checkbox'):
             return
-        single = (hasattr(self, 'selected_properties') and len(self.selected_properties) == 1)
-        state = 'normal' if single else 'disabled'
+        have_props = bool(getattr(self, 'selected_properties', None))
+        state = 'normal' if have_props else 'disabled'
         self.find_best_preprocess_checkbox.config(state=state)
-        if not single:
+        if not have_props:
             self.find_best_preprocess_var.set(False)
         self._sync_preprocess_combo_state()
 

@@ -80,6 +80,23 @@ class UIFlowMixin:
                 self.status_text.see(tk.END)
         self._run_on_ui(_append)
 
+    def _show_status_tab(self):
+        """Raise the Status & Log tab so the user watches the run as it happens.
+
+        Called when a Run / Batch Run starts: all progress output goes to that
+        tab, so leaving the user on Data View or Visualization would hide it.
+        No-op when the tab is already in front.
+        """
+        def _select():
+            try:
+                nb = getattr(self, 'display_notebook', None)
+                tab = getattr(self, 'status_tab', None)
+                if nb is not None and tab is not None:
+                    nb.select(tab)
+            except tk.TclError:
+                pass
+        self._run_on_ui(_select)
+
     def set_busy_state(self, busy):
         def _set():
             self._batch_running = busy
@@ -173,6 +190,7 @@ class UIFlowMixin:
             # ── Clear loaded data / trained-model state (fresh start) ───
             self.df = None
             self.wavelengths = None
+            self._target_outlier_cache = {}
             self.soil_properties = None
             self.input_filename = None
             self.output_filename = None

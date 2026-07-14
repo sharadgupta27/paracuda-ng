@@ -1189,9 +1189,23 @@ class DataIOMixin:
                 current_wl = wl_nm_new
 
             # ── Wavelength filtering (same as training) ───────────────────────
+            # Apply BOTH halves of the training filter: the min/max range AND the
+            # excluded regions (water bands, noisy edges).  Dropping only on the
+            # range would keep the excluded interior bands, so with resampling off
+            # the model would be handed more features than it was trained on.
+            # (`exclude_ranges` is saved with the model and restored on load, so
+            # this matches training whether or not the model came from disk.)
             if self.filtered_wavelengths is not None and len(self.filtered_wavelengths) > 0:
-                wl_idx = [i for i, w in enumerate(current_wl)
-                          if min(self.filtered_wavelengths) <= w <= max(self.filtered_wavelengths)]
+                lo = min(self.filtered_wavelengths)
+                hi = max(self.filtered_wavelengths)
+                excl = parse_exclude_ranges(self._get_exclude_ranges())
+
+                def _kept(w):
+                    if not (lo <= w <= hi):
+                        return False
+                    return not any(a <= w <= b for a, b in excl)
+
+                wl_idx = [i for i, w in enumerate(current_wl) if _kept(w)]
                 X_unknown = X_unknown[:, wl_idx]
                 # Actual wavelengths of the kept columns — the true SOURCE grid to
                 # resample FROM (guaranteed to match X_unknown's column count).
@@ -1418,10 +1432,21 @@ class DataIOMixin:
         except (ValueError, tk.TclError):
             threshold = 2.5
 
+        # The mask depends only on y + method/threshold, not on which model is
+        # about to be trained on it. A batch run calls this once per model for
+        # the same property with an unchanged y (find-best-preprocessing runs
+        # legitimately vary y per combo, so those still recompute), so cache
+        # on the actual target values and only log/apply it once instead of
+        # redoing the detection and re-printing the summary for every model.
+        cache = self.__dict__.setdefault('_target_outlier_cache', {})
+        cache_key = (method, threshold, y.tobytes())
+        if cache_key in cache:
+            keep = cache[cache_key]
+            return (X[keep], y[keep]) if keep is not None else (X, y)
+
         keep = remove_target_outliers(y, method=method, threshold=threshold)
         n_removed = int((~keep).sum())
         if n_removed and int(keep.sum()) >= 2:
-            X, y = X[keep], y[keep]
             label = property_name or getattr(self, 'selected_property', None) or "target"
             self.status_text.insert(
                 tk.END,
@@ -1429,11 +1454,14 @@ class DataIOMixin:
                 f"sample(s) ({method}, threshold={threshold:g}). "
                 f"{int(keep.sum())} remaining.\n")
             self.status_text.see(tk.END)
-        elif n_removed:
+            cache[cache_key] = keep
+            return X[keep], y[keep]
+        if n_removed:
             # Would leave <2 samples — skip rather than break training.
             self.status_text.insert(
                 tk.END,
                 f"  ↳ Target outlier removal skipped: would leave too few "
                 f"samples ({int(keep.sum())}).\n")
             self.status_text.see(tk.END)
+        cache[cache_key] = None
         return X, y
