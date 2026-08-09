@@ -69,3 +69,7 @@ Publication/
 *.tex
 *.bbl
 *.aus
+
+paracuda-qgis/
+
+paracuda-python/

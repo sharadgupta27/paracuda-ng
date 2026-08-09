@@ -1,8 +1,8 @@
 """
 Dynamic model-development process-flow chart (⑦ Apply tab).
 
-Renders the exact pipeline the user configured — data → spectral → resampling →
-preprocessing → model → validation → apply — as a publication-quality figure that
+Renders the exact pipeline the user configured - data → spectral → resampling →
+preprocessing → model → validation → apply - as a publication-quality figure that
 can be exported at 300 DPI.  The chart is *dynamic*: every node reads the live GUI
 selection (and the trained/loaded-model metadata once a model exists), so it
 doubles as a record of how a given model was built.
@@ -18,7 +18,7 @@ from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 class FlowChartMixin:
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Stage collection — read live GUI state defensively
+    # Stage collection - read live GUI state defensively
     # ─────────────────────────────────────────────────────────────────────────
     def _flow_get(self, attr, default=""):
         """Return a tk-var's value (or plain attribute) safely."""
@@ -35,8 +35,8 @@ class FlowChartMixin:
         from the current configuration.  ``active`` greys-out unset stages."""
         stages = []
         # Steps the user has actually engaged with (populated by the live-refresh
-        # traces).  Stages that always carry a default value — spectral domain,
-        # model, validation — light up only after they are touched (or once a
+        # traces).  Stages that always carry a default value - spectral domain,
+        # model, validation - light up only after they are touched (or once a
         # model is trained), so a fresh / reset session shows every step faded.
         touched = getattr(self, '_flow_active_steps', None) or set()
         trained = getattr(self, 'trained_model', None) is not None
@@ -127,7 +127,7 @@ class FlowChartMixin:
         if self._flow_get('apply_tabular_var', False):
             targets.append("Tabular data")
         if self._flow_get('apply_models_var', False):
-            targets.append("Hyperspectral image")
+            targets.append("Spectral image")
         apply_val = " + ".join(targets) if targets else "Not configured"
         stages.append(("8", "Apply", apply_val, bool(targets)))
 
@@ -312,7 +312,7 @@ class FlowChartMixin:
         return fig
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Live-refresh plumbing — keep the always-visible preview in sync with the
+    # Live-refresh plumbing - keep the always-visible preview in sync with the
     # wizard as parameters change on *any* step (not just the Apply tab).
     # ─────────────────────────────────────────────────────────────────────────
 

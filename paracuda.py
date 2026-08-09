@@ -1,12 +1,12 @@
 """
-Paracuda III - entry point.
+PARACUDA-NG - entry point.
 
 The application has been modularized into topical packages:
     preprocessing/  - spectral pre-processing and data utilities
     models/         - model construction, hyper-parameter tuning, batch scoring
     validation/     - cross-validation
     utils/          - file I/O, image processing, data conversion, help system
-    gui/            - the SpectralAnalyzer window (composed from mixins)
+    gui/            - the Paracuda window (composed from mixins)
 
 @author: Sharad Kumar Gupta
 """
@@ -17,9 +17,9 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 # pull in scikit-learn/SciPy (~4s). It is set before any model is fit, so the
 # suppression behaves exactly as before.
 
-# Re-export so ``paracuda.SpectralAnalyzer`` stays importable (headless tests, etc.).
-from gui.app import SpectralAnalyzer
+# Re-export so ``paracuda.Paracuda`` stays importable (headless tests, etc.).
+from gui.app import Paracuda
 
 if __name__ == "__main__":
-    app = SpectralAnalyzer()
+    app = Paracuda()
     app.mainloop()

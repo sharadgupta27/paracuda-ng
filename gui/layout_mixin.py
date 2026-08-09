@@ -52,7 +52,7 @@ class LayoutMixin:
         main_paned.bind("<Configure>", _set_sash)
 
         # Title / clock header above the wizard
-        title_label = ttk.Label(control_panel, text="Paracuda III",
+        title_label = ttk.Label(control_panel, text="PARACUDA-NG",
                                font=('Helvetica', 16, 'bold'), foreground=self._c('BNR'))
         title_label.pack(pady=(8, 2))
         self.datetime_label = ttk.Label(control_panel, text="",
@@ -80,7 +80,7 @@ class LayoutMixin:
         wizard_holder = ttk.Frame(left_split)
         left_split.add(wizard_holder, weight=3)
 
-        # The wizard notebook — one scrollable step per tab.  Each step frame is a
+        # The wizard notebook - one scrollable step per tab.  Each step frame is a
         # scrollable inner frame; the existing control groups are packed into the
         # step that matches the natural processing order.
         self.wizard_nb = ttk.Notebook(wizard_holder)
@@ -106,11 +106,19 @@ class LayoutMixin:
         data_row = ttk.Frame(data_frame)
         data_row.pack(fill="x", pady=2)
         
-        ttk.Button(data_row, text="📁 Load Excel", 
+        ttk.Button(data_row, text="📁 Load Excel",
                   command=self.load_excel, width=18).pack(side="left", padx=2, expand=True, fill="x")
-        ttk.Button(data_row, text="📊 Check Data", 
+        ttk.Button(data_row, text="📊 Check Data",
                   command=self.check_excel, width=18).pack(side="left", padx=2, expand=True, fill="x")
-        
+
+        # Distribution inspection - worth doing before anything else, since a
+        # badly skewed or near-constant property cannot be modelled well no
+        # matter which algorithm or preprocessing is chosen later.
+        self.distribution_btn = ttk.Button(
+            data_frame, text="📈 Show Data Distribution",
+            command=self.show_data_distribution, state='disabled')
+        self.distribution_btn.pack(fill="x", pady=(4, 2))
+
         # Export Statistics option
         self.export_stats_var = tk.BooleanVar()
         ttk.Checkbutton(data_frame, text="Export Statistics", 
@@ -147,9 +155,7 @@ class LayoutMixin:
         ttk.Label(preprocess_frame, text="Method:").pack(anchor="w")
         self.preprocess_var = tk.StringVar(value="No Preprocessing")
         self.preprocess_combo = ttk.Combobox(preprocess_frame, textvariable=self.preprocess_var,
-                                       values=["No Preprocessing", "Smoothing", "Spectral Outlier Removal",
-                                              "Continuum Removal", "Baseline Correction",
-                                              "First Derivative", "Second Derivative", "Absorbance"],
+                                       values=list(PREPROCESS_METHODS),
                                        state='readonly', width=23)
         self.preprocess_combo.pack(fill="x", pady=2)
         self.preprocess_combo.bind("<<ComboboxSelected>>", self.on_preprocess_change)
@@ -219,7 +225,7 @@ class LayoutMixin:
                   wraplength=230, foreground="#666666",
                   font=('Helvetica', 8, 'italic')).pack(anchor="w", pady=(0, 2))
 
-        # ===== Model selection group — a Single/Batch mode chooser =====
+        # ===== Model selection group - a Single/Batch mode chooser =====
 
         self.model_frame = ttk.LabelFrame(step4, text="Model Selection", padding="10")
         self.model_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -261,16 +267,26 @@ class LayoutMixin:
                                            state='readonly', width=23)
         self.model_combobox.pack(fill="x", pady=2)
         self.model_combobox.bind("<<ComboboxSelected>>", self.on_model_change)
-        
-        # Model parameters will be created by create_scrollable_params_frame()
+
+        # The per-model hyperparameter grid lives in a permanent host frame.
+        # It is rebuilt on every model change; without a fixed host the rebuilt
+        # frame was re-packed at the *end* of the Model group, so the panel
+        # silently re-ordered itself the first time the algorithm was changed.
+        self.params_host = ttk.Frame(self.model_frame)
+        self.params_host.pack(fill="both", expand=True)
         self.create_scrollable_params_frame()
 
         # ── Hyperparameter tuning (Optuna) ────────────────────────────────────
-        # Models are first evaluated on their default parameters; when this is
-        # enabled the winning / selected model is re-fit with Optuna-optimized
+        # Below the parameter grid on purpose: these are the manual values, and
+        # tuning is what overrides them, so it reads in that order.  Models are
+        # first evaluated on their default parameters; when this is enabled the
+        # winning / selected model is re-fit with Optuna-optimized
         # hyperparameters and the best settings are reported.
+        ttk.Separator(self.model_frame, orient='horizontal').pack(
+            fill='x', pady=(8, 4))
+
         tune_frame = ttk.Frame(self.model_frame)
-        tune_frame.pack(fill="x", pady=(6, 0))
+        tune_frame.pack(fill="x")
         self.tune_hyperparams_var = tk.BooleanVar(value=False)
         self.tune_checkbox = ttk.Checkbutton(
             tune_frame, text="⚙ Tune Hyperparameters (Optuna)",
@@ -279,17 +295,17 @@ class LayoutMixin:
         self.tune_checkbox.pack(anchor="w")
 
         tune_opts = ttk.Frame(self.model_frame)
-        tune_opts.pack(fill="x")
-        ttk.Label(tune_opts, text="Trials:", width=8).pack(side="left")
+        tune_opts.pack(fill="x", pady=(2, 4))
+        ttk.Label(tune_opts, text="Trials:").pack(side="left")
         self.tune_trials_var = tk.StringVar(value="30")
         self.tune_trials_entry = ttk.Entry(tune_opts, textvariable=self.tune_trials_var,
                                            width=6, state='disabled')
-        self.tune_trials_entry.pack(side="left", padx=2)
-        ttk.Label(tune_opts, text="CV folds:", width=9).pack(side="left", padx=(8, 0))
+        self.tune_trials_entry.pack(side="left", padx=(6, 0))
+        ttk.Label(tune_opts, text="CV folds:").pack(side="left", padx=(16, 0))
         self.tune_cv_var = tk.StringVar(value="3")
         self.tune_cv_entry = ttk.Entry(tune_opts, textvariable=self.tune_cv_var,
                                        width=5, state='disabled')
-        self.tune_cv_entry.pack(side="left", padx=2)
+        self.tune_cv_entry.pack(side="left", padx=(6, 0))
 
         # Validation  →  Step ⑤ Validate
         validation_frame = ttk.LabelFrame(step5, text="Validation", padding="10")
@@ -324,7 +340,7 @@ class LayoutMixin:
                     values=[str(i) for i in range(1, multiprocessing.cpu_count() + 1)], 
                     width=23, state='readonly').pack(fill="x", pady=2)
         
-        # Spectral Configuration — laid out as a logical top-to-bottom sequence:
+        # Spectral Configuration - laid out as a logical top-to-bottom sequence:
         #   ① Spectral domain  →  ② Wavelength range  →  ③ Resampling (reveals
         #   its sensor / method / spacing options only when turned on).
         spectral_frame = ttk.LabelFrame(step2, text="Spectral Configuration", padding="10")
@@ -356,7 +372,7 @@ class LayoutMixin:
                                        font=('Helvetica', 9, 'bold'))
         self.wl_unit_label.pack(side="left")
 
-        # LWIR note (emissivity) — kept next to the domain it refers to.
+        # LWIR note (emissivity) - kept next to the domain it refers to.
         note_holder = ttk.Frame(spectral_frame)
         note_holder.pack(fill="x")
         self.lwir_note_label = ttk.Label(note_holder,
@@ -392,17 +408,22 @@ class LayoutMixin:
         excl_btn_row = ttk.Frame(spectral_frame)
         excl_btn_row.pack(fill="x", pady=(0, 2))
         ttk.Button(excl_btn_row, text="+ H₂O bands", width=13,
-                   command=lambda: self._append_exclude_preset(WATER_ABSORPTION_RANGES)
+                   command=self._append_water_bands
                    ).pack(side="left", padx=2)
         ttk.Button(excl_btn_row, text="+ Noisy edges", width=13,
-                   command=lambda: self._append_exclude_preset(NOISY_EDGE_RANGES)
+                   command=self._append_noisy_edges
                    ).pack(side="left", padx=2)
         ttk.Button(excl_btn_row, text="Clear", width=6,
                    command=lambda: self.exclude_ranges_var.set("")
                    ).pack(side="left", padx=2)
-        ttk.Label(spectral_frame,
-                  text="e.g. 1350-1450, 1800-1960  (comma-separated lo-hi pairs)",
-                  foreground="#888888", font=('Helvetica', 8, 'italic')).pack(anchor="w")
+        # Says what the presets will actually insert for the selected domain -
+        # the noisy-edge numbers are sensor-specific, so they change with it.
+        self.exclude_hint_label = ttk.Label(
+            spectral_frame,
+            text="e.g. 1350-1450, 1800-1960  (comma-separated lo-hi pairs)",
+            foreground="#888888", font=('Helvetica', 8, 'italic'))
+        self.exclude_hint_label.pack(anchor="w")
+        self._refresh_exclude_hint()
 
         # ── ③ Resampling ─────────────────────────────────────────────────────
         ttk.Label(spectral_frame, text="③ Resampling", font=_step_font,
@@ -414,7 +435,7 @@ class LayoutMixin:
         resampling_combo = ttk.Combobox(row1, textvariable=self.resampling_var,
                     values=["Yes", "No"], width=8, state='readonly')
         resampling_combo.pack(side="left", padx=2)
-        # Always-visible reminder that binning is active — the binning controls
+        # Always-visible reminder that binning is active - the binning controls
         # themselves are hidden with the resample options when Resample = No, so
         # this keeps the state discoverable.
         self.binning_status_label = ttk.Label(
@@ -439,7 +460,7 @@ class LayoutMixin:
             font=('Helvetica', 8, 'italic'))
         self.sensor_hint_label.pack(side="left", padx=(6, 0))
 
-        # Resampling method — six options: three interpolation orders and three
+        # Resampling method - six options: three interpolation orders and three
         # bandwidth-aware (FWHM-driven) methods.  See RESAMPLE_METHODS.
         row1c = ttk.Frame(self.resample_options_frame)
         row1c.pack(fill="x", pady=(2, 2))
@@ -450,7 +471,7 @@ class LayoutMixin:
             values=RESAMPLE_METHODS, width=22, state='readonly')
         self.resample_method_combo.pack(side="left", padx=2)
 
-        # FWHM / SRF upload — only shown for a Custom sensor with a bandwidth-aware
+        # FWHM / SRF upload - only shown for a Custom sensor with a bandwidth-aware
         # method (predefined sensors carry their own FWHM globally).
         self.fwhm_upload_frame = ttk.Frame(self.resample_options_frame)
         fwhm_row = ttk.Frame(self.fwhm_upload_frame)
@@ -470,7 +491,7 @@ class LayoutMixin:
             foreground="#888888", font=('Helvetica', 8, 'italic'))
         self.srf_status_label.pack(side="left", padx=(6, 0))
 
-        # Spacing — only meaningful for the "Custom" uniform grid.
+        # Spacing - only meaningful for the "Custom" uniform grid.
         row1d = ttk.Frame(self.resample_options_frame)
         row1d.pack(fill="x", pady=(2, 2))
         self._spacing_lbl = ttk.Label(row1d, text="Spacing (nm):", width=15)
@@ -481,7 +502,7 @@ class LayoutMixin:
         ttk.Label(row1d, text="(Custom grid only)", foreground="#888888",
                   font=('Helvetica', 8, 'italic')).pack(side="left", padx=(6, 0))
 
-        # Binning — thin the resampled grid by keeping the centre band of every
+        # Binning - thin the resampled grid by keeping the centre band of every
         # `bin_size` group (resample → bin).  Only affects dense grids.
         row1e = ttk.Frame(self.resample_options_frame)
         row1e.pack(fill="x", pady=(2, 2))
@@ -586,18 +607,18 @@ class LayoutMixin:
 
         tools_row = ttk.Frame(tools_frame)
         tools_row.pack(fill="x", pady=2)
-        ttk.Button(tools_row, text="🎲 Randomize",
-                   command=self.show_data_randomization, width=12
+        ttk.Button(tools_row, text="🎲 Check Spectral Integrity",
+                   command=self.show_data_randomization, width=24
                    ).pack(side="left", padx=2, expand=True, fill="x")
-        ttk.Button(tools_row, text="🔬 Harmonize",
-                   command=self.show_spectral_harmonization, width=12
+        ttk.Button(tools_row, text="🔬 Spectral Harmonization",
+                   command=self.show_spectral_harmonization, width=24
                    ).pack(side="left", padx=2, expand=True, fill="x")
         
-        # ── Step ⑦ Apply — how a trained model reaches new data ───────────────
+        # ── Step ⑦ Apply - how a trained model reaches new data ───────────────
         ttk.Label(step7,
                   text="A trained model + its resampling is re-applied here to a "
-                       "hyperspectral image or an unknown tabular dataset. Save or "
-                       "load a model, then predict.",
+                       "multispectral or hyperspectral image, or an unknown tabular "
+                       "dataset. Save or load a model, then predict.",
                   wraplength=420, foreground="#555555",
                   font=('Helvetica', 8, 'italic')).pack(anchor="w", padx=10, pady=(8, 2))
 
@@ -696,7 +717,7 @@ class LayoutMixin:
                                           state='readonly', width=23)
         self.colormap_combo.pack(fill="x", pady=2)
         # Changing the colormap re-renders the existing predicted image live in the
-        # Visualization tab — it must NOT re-run the prediction.
+        # Visualization tab - it must NOT re-run the prediction.
         self.colormap_combo.bind("<<ComboboxSelected>>", self._on_colormap_change)
 
         # Initialise the Back/Next button states for the first tab.
@@ -783,7 +804,7 @@ class LayoutMixin:
         data_scrollbar_x.config(command=self.data_display_text.xview)
         
         self.data_display_text.insert('1.0', 
-            "Welcome to Paracuda III!\n\n"
+            "Welcome to PARACUDA-NG!\n\n"
             "To get started:\n"
             "1. Load an Excel file (File → Load Excel File)\n"
             "2. Select soil properties\n"
@@ -849,7 +870,7 @@ class LayoutMixin:
         opts = ttk.Frame(self.spectra_opts_frame)
         opts.pack(side="left", fill="x", expand=True)
 
-        # Row 1 — how many spectra, and how they are picked.
+        # Row 1 - how many spectra, and how they are picked.
         row_a = ttk.Frame(opts)
         row_a.pack(fill="x")
         ttk.Label(row_a, text="Spectra to show:").pack(side="left", padx=(5, 2))
@@ -864,7 +885,7 @@ class LayoutMixin:
                         variable=self.spectra_mode_var,
                         command=self._sync_spectra_range_state).pack(side="left", padx=2)
 
-        # Row 2 — the sample range (active only in "Within sample range" mode).
+        # Row 2 - the sample range (active only in "Within sample range" mode).
         row_b = ttk.Frame(opts)
         row_b.pack(fill="x", pady=(3, 0))
         ttk.Label(row_b, text="From:").pack(side="left", padx=(5, 2))
@@ -977,10 +998,49 @@ class LayoutMixin:
         return self.exclude_ranges
 
     def _append_exclude_preset(self, ranges):
-        """Append a preset list of ranges to the exclude-ranges entry."""
-        existing = self.exclude_ranges_var.get().strip().rstrip(",").strip()
-        addition = ", ".join(f"{int(lo)}-{int(hi)}" for lo, hi in ranges)
-        self.exclude_ranges_var.set(f"{existing}, {addition}" if existing else addition)
+        """Merge a preset list of ranges into the exclude-ranges entry.
+
+        Merging rather than appending: pressing a preset button twice, or
+        pressing two presets that share a band, used to stack literal duplicates
+        in the field ("1350-1450, 1800-1960, 1350-1450, ...").  Overlapping
+        ranges are fused, so the field always shows the minimal set actually in
+        effect and a second press is a no-op.
+        """
+        merged = merge_exclude_ranges(self.exclude_ranges_var.get(), ranges)
+        self.exclude_ranges_var.set(format_exclude_ranges(merged))
+
+    def _append_water_bands(self):
+        """Insert the atmospheric water-vapour bands for the selected domain."""
+        domain = getattr(self, 'spectral_domain', 'VSWIR')
+        ranges = water_absorption_ranges(domain)
+        if not ranges:
+            messagebox.showinfo(
+                "No water bands in this domain",
+                "Atmospheric water-vapour absorption (1350-1450 and "
+                "1800-1960 nm) lies in the VSWIR.\n\nThe current domain is "
+                "LWIR only, so there is nothing for this preset to exclude.")
+            return
+        self._append_exclude_preset(ranges)
+
+    def _append_noisy_edges(self):
+        """Insert the noisy detector edges for the selected spectral domain.
+
+        The edges belong to the instrument, not to the software: a VSWIR
+        spectroradiometer rolls off at 350-400 / 2450-2500 nm, an LWIR
+        instrument at the MCT limits instead.
+        """
+        self._append_exclude_preset(
+            noisy_edge_ranges(getattr(self, 'spectral_domain', 'VSWIR')))
+
+    def _refresh_exclude_hint(self):
+        """Show which ranges the two preset buttons will insert right now."""
+        if not hasattr(self, 'exclude_hint_label'):
+            return
+        domain = getattr(self, 'spectral_domain', 'VSWIR')
+        edges = format_exclude_ranges(noisy_edge_ranges(domain)) or "n/a"
+        water = format_exclude_ranges(water_absorption_ranges(domain)) or "n/a"
+        self.exclude_hint_label.config(
+            text=f"{domain} presets - H₂O: {water}   noisy edges: {edges}")
 
     def load_custom_fwhm(self):
         """Load a custom sensor's (centre, FWHM) table from a CSV for the Custom
@@ -1023,6 +1083,54 @@ class LayoutMixin:
             self.srf_status_label.config(text=f"SRF: {n} curves loaded",
                                          foreground="#0066cc")
 
+    def _attach_param_tooltip(self, widget, text):
+        """Show ``text`` in a small popup while the pointer rests on ``widget``.
+
+        The per-parameter explanations already live in ``model_params`` but were
+        never surfaced anywhere; the abbreviated grid labels ("Reg Alpha",
+        "Patience") are exactly where they are wanted.
+        """
+        state = {'win': None, 'after': None}
+
+        def show():
+            state['after'] = None
+            if state['win'] is not None:
+                return
+            try:
+                x = widget.winfo_rootx()
+                y = widget.winfo_rooty() + widget.winfo_height() + 4
+            except Exception:
+                return
+            tip = tk.Toplevel(widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{x}+{y}")
+            tk.Label(tip, text=text, justify="left", wraplength=260,
+                     background="#ffffe0", foreground="#222222",
+                     relief="solid", borderwidth=1,
+                     font=('Helvetica', 8)).pack(ipadx=4, ipady=2)
+            state['win'] = tip
+
+        def enter(_event=None):
+            state['after'] = widget.after(600, show)
+
+        def leave(_event=None):
+            if state['after'] is not None:
+                try:
+                    widget.after_cancel(state['after'])
+                except Exception:
+                    pass
+                state['after'] = None
+            if state['win'] is not None:
+                try:
+                    state['win'].destroy()
+                except Exception:
+                    pass
+                state['win'] = None
+
+        widget.bind("<Enter>", enter, add="+")
+        widget.bind("<Leave>", leave, add="+")
+        widget.bind("<Destroy>", leave, add="+")
+
     def create_scrollable_params_frame(self):
         # Remove old frame if exists
         if hasattr(self, 'params_canvas'):
@@ -1034,8 +1142,11 @@ class LayoutMixin:
         if hasattr(self, 'params_container'):
             self.params_container.destroy()
 
-        # Create frame container for canvas and scrollbar
-        self.params_container = ttk.Frame(self.model_frame)
+        # Create frame container for canvas and scrollbar.  Built into the
+        # permanent host so rebuilding it on a model change cannot move the
+        # parameter grid to the bottom of the Model group.
+        self.params_container = ttk.Frame(
+            getattr(self, 'params_host', None) or self.model_frame)
         self.params_container.pack(fill="both", expand=True, pady=(4, 0))
 
         # Canvas for scrollability - dynamic height based on content
@@ -1059,30 +1170,42 @@ class LayoutMixin:
         model = self.model_var.get()
         params = self.model_params[model]["params"]
         
-        # Calculate layout - 2 columns of parameter pairs
+        # Two label/widget pairs per row.  The label columns size themselves to
+        # their text (a fixed width truncated "Min Samples Split" to
+        # "Min Samples Sp") and the widget columns absorb the slack, so the two
+        # pairs stay on an even split however wide the panel is.
         row = 0
         col = 0
         max_params_per_row = 2
-        
+        for c in range(max_params_per_row):
+            self.params_frame.grid_columnconfigure(c * 2, weight=0)
+            self.params_frame.grid_columnconfigure(
+                c * 2 + 1, weight=1, minsize=72, uniform='paramval')
+
         for pname, pinfo in params.items():
-            # Label
-            ttk.Label(self.params_frame, text=pinfo.get("label", pname), width=13).grid(
-                row=row, column=col*2, sticky=tk.W, padx=(2, 1), pady=2)
-            
+            # Label - natural width, with a real gap before its widget.
+            ttk.Label(self.params_frame, text=pinfo.get("label", pname),
+                      anchor="w").grid(
+                row=row, column=col*2, sticky=tk.W, padx=(2, 8), pady=3)
+
             # Input widget
             if pinfo["type"] == "entry":
                 var = tk.StringVar(value=pinfo.get("default", ""))
                 widget = ttk.Entry(self.params_frame, textvariable=var, width=8)
             elif pinfo["type"] == "combobox":
                 var = tk.StringVar(value=pinfo.get("default", ""))
-                widget = ttk.Combobox(self.params_frame, textvariable=var, 
+                widget = ttk.Combobox(self.params_frame, textvariable=var,
                                     values=pinfo.get("values", []), width=8, state='readonly')
-            
-            widget.grid(row=row, column=col*2+1, sticky=tk.W, padx=(1, 6), pady=2)
+
+            widget.grid(row=row, column=col*2+1, sticky=(tk.W, tk.E),
+                        padx=(0, 14), pady=3)
             self.param_vars[pname] = var
             self.param_widgets[pname] = widget
             self.param_widgets_dict[pname] = {'widget': widget, 'type': pinfo["type"]}
-            
+            # The one-line explanation from model_params, on hover.
+            if pinfo.get("help"):
+                self._attach_param_tooltip(widget, pinfo["help"])
+
             # Move to next position
             col += 1
             if col >= max_params_per_row:
@@ -1119,11 +1242,13 @@ class LayoutMixin:
         def configure_scroll_region(event=None):
             self.params_canvas.configure(scrollregion=self.params_canvas.bbox("all"))
             
-            # Calculate required height (max 200px, min 100px)
+            # Calculate required height.  The ceiling fits the tallest model
+            # (the 9-parameter neural network) without scrolling; anything
+            # larger still scrolls.
             bbox = self.params_canvas.bbox("all")
             if bbox:
                 content_height = bbox[3] - bbox[1]
-                canvas_height = min(max(content_height + 10, 100), 200)
+                canvas_height = min(max(content_height + 10, 100), 240)
                 self.params_canvas.configure(height=canvas_height)
                 
                 # Show/hide scrollbar based on content
@@ -1272,7 +1397,7 @@ class LayoutMixin:
     def toggle_image_options(self):
         state = 'normal' if self.apply_models_var.get() else 'disabled'
         self.load_image_btn.config(state=state)
-        # The colormap picker is a fixed-choice list — keep it read-only (never
+        # The colormap picker is a fixed-choice list - keep it read-only (never
         # freely editable) when enabled so users can only pick valid colormaps.
         self.colormap_combo.config(state='readonly' if self.apply_models_var.get() else 'disabled')
         # Predict and View buttons remain disabled until image is loaded and model is trained
@@ -1334,6 +1459,9 @@ class LayoutMixin:
                 self.lwir_note_label.pack(anchor="w", pady=(2, 0))
             else:
                 self.lwir_note_label.pack_forget()
+
+        # The noisy-edge / water-band presets are domain-specific.
+        self._refresh_exclude_hint()
 
     def toggle_batch_mode(self):
         """Toggle batch mode controls"""

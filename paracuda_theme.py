@@ -1,8 +1,8 @@
 """
 paracuda_theme.py
 =================
-Shared visual theme for the whole Paracuda software — both the main
-``Paracuda III`` window (``gui/``) and the standalone Data Converter
+Shared visual theme for the whole PARACUDA-NG software - both the main
+``PARACUDA-NG`` window (``gui/``) and the standalone Data Converter
 (``utils/data_converter.py``).
 
 The Data Converter already shipped a polished navy/blue "card" look driven by a
@@ -10,7 +10,7 @@ set of ``_C_*`` colour constants plus a ``_apply_styles`` method.  This module
 generalises that into
 
   * a dictionary of named **palettes** (Ocean / Slate / Forest / Light / Dark),
-  * ``apply_ttk_theme(root, palette)`` — the single styling routine both tools
+  * ``apply_ttk_theme(root, palette)`` - the single styling routine both tools
     call (lifted from the converter's ``_apply_styles``), and
   * a tiny JSON settings file so the two *separate processes* agree on the
     active theme.
@@ -23,7 +23,9 @@ converter is copied out on its own) the caller keeps its old hardcoded look.
 
 import json
 import os
-from tkinter import ttk
+# NOTE: ``tkinter`` is imported lazily inside ``apply_ttk_theme`` (the only user of
+# ttk) so this module's palette definitions can be imported in a Tk-free
+# environment such as the PARACUDA-NG QGIS plugin (Qt only).
 
 # ---------------------------------------------------------------------------
 # Palette definitions
@@ -44,7 +46,7 @@ _ACCENTS = {
 }
 
 PALETTES = {
-    # The current Data-Converter look — the default.
+    # The current Data-Converter look - the default.
     "Ocean": {
         "FONT": "Segoe UI",
         "WIN":  "#EFF4FC", "CARD": "#FFFFFF", "LINE": "#C8D8EE",
@@ -66,7 +68,7 @@ PALETTES = {
         "THDR": "#DCE3EA", "TAB":  "#D4DCE4", "TABA": "#FFFFFF",
         "ACCENT": "#5B8DC0", **_ACCENTS,
     },
-    # Earthy green — fitting for soil spectroscopy.
+    # Earthy green - fitting for soil spectroscopy.
     "Forest": {
         "FONT": "Segoe UI",
         "WIN":  "#EEF5EE", "CARD": "#FFFFFF", "LINE": "#C4DBC4",
@@ -77,7 +79,7 @@ PALETTES = {
         "THDR": "#D9EAD9", "TAB":  "#D2E6D2", "TABA": "#FFFFFF",
         "ACCENT": "#4CAF50", **_ACCENTS,
     },
-    # High-contrast light — maximum readability.
+    # High-contrast light - maximum readability.
     "Light-Contrast": {
         "FONT": "Segoe UI",
         "WIN":  "#F5F5F5", "CARD": "#FFFFFF", "LINE": "#9AA0A6",
@@ -91,6 +93,10 @@ PALETTES = {
     # Dark mode.
     "Dark": {
         "FONT": "Segoe UI",
+        # TXT is the primary *text* colour; BNR stays the dark banner/heading
+        # *fill*.  On light themes BNR doubles as text (dark-on-light), but in
+        # dark mode text must be light - hence a dedicated key.
+        "TXT":  "#E6EAF2",
         "WIN":  "#1E232B", "CARD": "#2A303B", "LINE": "#3C4551",
         "BNR":  "#0F1116", "PRI":  "#3B82F6", "PRI2": "#2F6FE0",
         "ACT":  "#333B47", "ACT2": "#3E4855", "GHO":  "#1E232B",
@@ -118,7 +124,7 @@ def get_palette(name=None):
 
 
 # ---------------------------------------------------------------------------
-# Persistence — a tiny JSON both processes read.
+# Persistence - a tiny JSON both processes read.
 # ---------------------------------------------------------------------------
 
 def _settings_path():
@@ -165,11 +171,12 @@ def save_theme_name(name):
 def apply_ttk_theme(root, palette=None):
     """Configure all ttk styles on *root* from *palette*.
 
-    This is a direct generalisation of ``ParacudaConverter._apply_styles`` — the
+    This is a direct generalisation of ``ParacudaConverter._apply_styles`` - the
     same style names and mappings, with the hardcoded ``_C_*`` colours replaced
     by palette lookups.  Both the main app and the converter call it so the two
     windows share one visual language.
     """
+    from tkinter import ttk  # local import: keeps module Tk-free until styling
     p = palette or get_palette()
     C = p.get                      # shorthand: C('WIN'), C('CARD'), ...
     FONT = p.get("FONT", "Segoe UI")

@@ -1,5 +1,5 @@
 """
-Data-randomization and spectral-harmonization tool dialogs.
+Data Distribution, Check Spectral Integrity and Spectral Harmonization dialogs.
 
 @author: Sharad Kumar Gupta
 """
@@ -9,7 +9,199 @@ from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 class DialogsMixin:
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Data Randomization / Integrity Check dialog
+    # Data Distribution viewer
+    # ─────────────────────────────────────────────────────────────────────────
+    def show_data_distribution(self):
+        """Show the distribution of every property column in the loaded data.
+
+        Deliberately available straight after loading, before any configuration:
+        a strongly skewed, near-constant or mostly-missing target will not model
+        well whatever is chosen downstream, and seeing that here saves the user
+        from a pointless run.
+        """
+        if self.df is None:
+            messagebox.showwarning("Warning", "Please load a dataset first.")
+            return
+
+        wl_cols = list(self.wavelengths) if self.wavelengths is not None else []
+        # Prefer the properties the user selected; otherwise show every candidate.
+        columns = (list(self.selected_properties)
+                   if getattr(self, 'selected_properties', None)
+                   else suggest_numeric_columns(self.df, wl_cols))
+        if not columns:
+            messagebox.showinfo(
+                "Data Distribution",
+                "No numeric property columns were found to summarise.\n\n"
+                "The wavelength columns are excluded on purpose - this view is "
+                "about the properties you want to predict.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Data Distribution")
+        win.geometry("1060x780")
+        win.resizable(True, True)
+        try:
+            win.transient(self)
+        except Exception:
+            pass
+
+        header = ttk.Frame(win, padding=(10, 8, 10, 0))
+        header.pack(fill="x")
+        ttk.Label(header, text="Distribution of the target properties",
+                  font=('Helvetica', 12, 'bold')).pack(anchor="w")
+        ttk.Label(
+            header,
+            text=("Check for skew, outliers and missing values BEFORE training. "
+                  "A strongly skewed or near-constant property is a data problem, "
+                  "not a modelling one."),
+            wraplength=1020, foreground="#666666",
+            font=('Helvetica', 9, 'italic')).pack(anchor="w", pady=(2, 6))
+
+        # Every property is summarised up front (cheap - it is only statistics),
+        # but only the selected one is plotted.  Drawing all of them at once
+        # produced a grid of thumbnails too small to read.
+        summaries = summarize_distribution(self.df, columns, wl_cols)
+        palette = getattr(self, '_palette', None)
+
+        picker = ttk.Frame(win, padding=(10, 0, 10, 4))
+        picker.pack(fill="x")
+        ttk.Label(picker, text="Property:",
+                  font=('Helvetica', 9, 'bold')).pack(side="left")
+        # Flag the problem properties in the list itself, so a bad one is
+        # obvious without stepping through every entry.
+        _marks = {'ok': '✓', 'warn': '!', 'problem': '!!'}
+        choice_to_col, choices = {}, []
+        for s in summaries:
+            label = f"{_marks.get(s['severity'], '')} {s['column']}".strip()
+            choice_to_col[label] = s['column']
+            choices.append(label)
+        prop_var = tk.StringVar(value=choices[0] if choices else "")
+        prop_combo = ttk.Combobox(picker, textvariable=prop_var, values=choices,
+                                  state='readonly', width=32)
+        prop_combo.pack(side="left", padx=(6, 12))
+        counts = {k: sum(1 for s in summaries if s['severity'] == k)
+                  for k in ('ok', 'warn', 'problem')}
+        ttk.Label(picker,
+                  text=(f"{len(summaries)} properties  -  {counts['ok']} ok, "
+                        f"{counts['warn']} to check, {counts['problem']} problem"),
+                  foreground="#666666",
+                  font=('Helvetica', 9)).pack(side="left")
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+        plot_tab = ttk.Frame(nb, padding=4)
+        text_tab = ttk.Frame(nb, padding=4)
+        nb.add(plot_tab, text="  📈 Plots  ")
+        nb.add(text_tab, text="  📋 Statistics & Findings  ")
+
+        state = {'fig': None, 'column': None}
+        canvas_holder = ttk.Frame(plot_tab)
+        canvas_holder.pack(fill="both", expand=True)
+
+        report = tk.Text(text_tab, wrap="word", font=('Consolas', 9))
+        scroll = ttk.Scrollbar(text_tab, orient="vertical", command=report.yview)
+        report.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        report.pack(side="left", fill="both", expand=True)
+        try:
+            report.configure(bg=self._c('BNR'), fg=self._c('TXT'),
+                             insertbackground=self._c('TXT'))
+        except Exception:
+            pass
+
+        verdict_lbl = ttk.Label(win, text="", font=('Helvetica', 10, 'bold'))
+        verdict_lbl.pack(anchor="w", padx=12, pady=(0, 4))
+
+        _verdicts = {
+            'ok': ("✓ %s looks usable.", "#1a9850"),
+            'warn': ("! %s needs a look - see Statistics & Findings.", "#b8860b"),
+            'problem': ("!! %s has a serious distribution problem - fix the "
+                        "data before training.", "#d73027"),
+        }
+
+        def show_property(*_args):
+            column = choice_to_col.get(prop_var.get())
+            if column is None or column == state['column']:
+                return
+            state['column'] = column
+            for child in canvas_holder.winfo_children():
+                child.destroy()
+            fig, summary = create_property_figure(
+                self.df, column, wavelength_cols=wl_cols, palette=palette)
+            state['fig'] = fig
+            canvas = FigureCanvasTkAgg(fig, canvas_holder)
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+            canvas.draw()
+
+            report.configure(state="normal")
+            report.delete("1.0", tk.END)
+            report.insert("1.0", property_report_text(summary))
+            report.configure(state="disabled")
+
+            text, colour = _verdicts[summary['severity']]
+            verdict_lbl.config(text=text % column, foreground=colour)
+
+        prop_combo.bind("<<ComboboxSelected>>", show_property)
+        show_property()
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+
+        def save_plot():
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".png",
+                filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf")],
+                initialfile=(f"{getattr(self, 'input_filename', 'data')}_"
+                             f"{state['column']}_distribution.png"),
+                title=f"Save the {state['column']} plot as")
+            if path:
+                state['fig'].savefig(path, dpi=300, bbox_inches="tight")
+                messagebox.showinfo("Saved", f"Plot saved to:\n{path}", parent=win)
+
+        def save_all_plots():
+            """One overview sheet with every property, for a report appendix."""
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".png",
+                filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf")],
+                initialfile=f"{getattr(self, 'input_filename', 'data')}_distribution.png",
+                title="Save an overview of all properties as")
+            if not path:
+                return
+            fig_all, _ = create_distribution_figure(
+                self.df, columns, wavelength_cols=wl_cols, palette=palette,
+                max_cols=len(columns))
+            fig_all.savefig(path, dpi=300, bbox_inches="tight")
+            messagebox.showinfo("Saved", f"Overview saved to:\n{path}", parent=win)
+
+        def save_stats():
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".xlsx",
+                filetypes=[("Excel workbook", "*.xlsx"), ("Text file", "*.txt")],
+                initialfile=f"{getattr(self, 'input_filename', 'data')}_distribution.xlsx",
+                title="Save distribution statistics as")
+            if not path:
+                return
+            if path.lower().endswith(".txt"):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(distribution_report_text(summaries))
+            else:
+                rows = [{k: v for k, v in s.items() if k != 'findings'}
+                        for s in summaries]
+                for row, s in zip(rows, summaries):
+                    row['findings'] = " | ".join(s['findings'])
+                pd.DataFrame(rows).to_excel(path, index=False)
+            messagebox.showinfo("Saved", f"Statistics saved to:\n{path}", parent=win)
+
+        ttk.Button(btns, text="💾 Save This Plot (300 DPI)",
+                   command=save_plot).pack(side="left", padx=2)
+        ttk.Button(btns, text="💾 Save All Properties",
+                   command=save_all_plots).pack(side="left", padx=2)
+        ttk.Button(btns, text="💾 Save Statistics",
+                   command=save_stats).pack(side="left", padx=2)
+        ttk.Button(btns, text="Close", command=win.destroy).pack(side="right", padx=2)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check Spectral Integrity dialog (label permutation + mixing)
     # ─────────────────────────────────────────────────────────────────────────
     def show_data_randomization(self):
         """Open a dialog for label permutation test and spectral mixing integrity check."""
@@ -21,7 +213,7 @@ class DialogsMixin:
             return
 
         win = tk.Toplevel(self)
-        win.title("Data Integrity / Randomization Tools")
+        win.title("Check Spectral Integrity - Label Permutation & Mixing Tests")
         win.geometry("880x720")
         win.resizable(True, True)
 
@@ -99,13 +291,13 @@ class DialogsMixin:
                             label=f'Permuted mean={np.mean(perm_scores):.3f}')
                 ax1.set_xlabel("Cross-validated R²", fontsize=10)
                 ax1.set_ylabel("Frequency", fontsize=10)
-                ax1.set_title(f"Label Permutation Test — {prop}", fontsize=11, fontweight='bold')
+                ax1.set_title(f"Label Permutation Test - {prop}", fontsize=11, fontweight='bold')
                 ax1.legend(fontsize=9)
                 canvas1.draw()
 
                 interp = ("✔ Model is statistically significant (p<0.05)."
                           if p_val < 0.05 else
-                          "✘ Model is NOT significant (p≥0.05) — labels may be uninformative.")
+                          "✘ Model is NOT significant (p≥0.05) - labels may be uninformative.")
                 result_lbl1.config(
                     text=(f"Observed R²={obs_r2:.4f}  |  "
                           f"Permuted mean={np.mean(perm_scores):.4f}  |  "
@@ -193,7 +385,7 @@ class DialogsMixin:
         result_lbl2.pack(anchor="w", pady=2)
 
         # Two views: the R² impact bar chart and a visualization of exactly how
-        # the mixing was applied (original vs mislabelled spectra, side by side).
+        # the mixing was applied.
         mix_nb = ttk.Notebook(tab2)
         mix_nb.pack(fill="both", expand=True, pady=(4, 0))
 
@@ -207,21 +399,46 @@ class DialogsMixin:
         canvas2 = FigureCanvasTkAgg(fig2, mix_tab_r2)
         canvas2.get_tk_widget().pack(fill="both", expand=True)
 
-        # Side-by-side spectra: left = affected samples with their TRUE labels,
-        # right = the SAME spectra now carrying the wrong (mixed) labels.
-        fig_spec = Figure(figsize=(7.4, 3.4), tight_layout=True)
-        ax_orig  = fig_spec.add_subplot(121)
-        ax_mixed = fig_spec.add_subplot(122)
-        ax_orig.text(0.5, 0.5, "Run the check to view how mixing is applied.",
-                     ha='center', va='center', fontsize=9, color='grey')
-        ax_orig.axis('off'); ax_mixed.axis('off')
-        canvas_spec = FigureCanvasTkAgg(fig_spec, mix_tab_spec)
-        canvas_spec.get_tk_widget().pack(fill="both", expand=True)
+        # The mixing figure is rebuilt per run (see utils/integrity_plots) and
+        # swapped into this holder.
+        spec_holder = ttk.Frame(mix_tab_spec)
+        spec_holder.pack(fill="both", expand=True)
+        ttk.Label(spec_holder,
+                  text="Run the check to view how mixing is applied.",
+                  foreground="#888888",
+                  font=('Helvetica', 9, 'italic')).pack(pady=20)
+        _spec_canvas = {'canvas': None}
 
-        # Compact before→after label mapping under the spectra.
-        map_lbl = ttk.Label(mix_tab_spec, text="", justify="left",
-                            font=('Consolas', 8), foreground="#444444")
-        map_lbl.pack(anchor="w", pady=(2, 0))
+        # Before→after label mapping, laid out across columns: a single tall
+        # column of a dozen rows squeezed the plot above it off the dialog.
+        map_frame = ttk.LabelFrame(mix_tab_spec,
+                                   text="Label reassignment (true → assigned)",
+                                   padding=(6, 2))
+        map_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(map_frame, text="(runs after the check)", foreground="#888888",
+                  font=('Helvetica', 8, 'italic')).pack(anchor="w")
+
+        def _fill_map_grid(rows, n_hidden):
+            """Lay the reassignment rows out in as many columns as fit."""
+            for child in map_frame.winfo_children():
+                child.destroy()
+            if not rows:
+                return
+            ncols = 4 if len(rows) > 12 else (3 if len(rows) > 6 else 2)
+            nrows = int(math.ceil(len(rows) / ncols))
+            for k, text in enumerate(rows):
+                r, c = k % nrows, k // nrows
+                ttk.Label(map_frame, text=text, font=('Consolas', 8),
+                          foreground="#444444").grid(row=r, column=c,
+                                                     sticky="w", padx=(0, 14))
+            for c in range(ncols):
+                map_frame.grid_columnconfigure(c, weight=1)
+            if n_hidden:
+                ttk.Label(map_frame, text=f"… (+{n_hidden} more relabelled)",
+                          font=('Helvetica', 8, 'italic'),
+                          foreground="#888888").grid(
+                    row=nrows, column=0, columnspan=ncols, sticky="w",
+                    pady=(2, 0))
 
         def run_mix_test():
             try:
@@ -265,55 +482,34 @@ class DialogsMixin:
                              bar.get_height() + 0.01, f'{val:.3f}',
                              ha='center', va='bottom', fontsize=11, fontweight='bold')
                 ax2.set_ylabel("Cross-validated R²", fontsize=10)
-                ax2.set_title(f"Spectral Mixing Integrity — {prop}", fontsize=11, fontweight='bold')
+                ax2.set_title(f"Spectral Mixing Integrity - {prop}", fontsize=11, fontweight='bold')
                 ax2.set_ylim(bottom=min(0, r2_mix - 0.15),
                              top=max(1.0, r2_orig + 0.15))
                 ax2.axhline(0, color='grey', linewidth=0.8, linestyle='--')
                 canvas2.draw()
 
                 # ── Visualise how the mixing is applied ──────────────────────
-                # Same spectra on both panels; only the attached label differs,
-                # making the "wrong chemistry on the right spectrum" error clear.
-                wl_num = np.array([float(w) for w in self.wavelengths])
-                order  = np.argsort(wl_num)
-                wl_sorted = wl_num[order]
-                ax_orig.clear(); ax_mixed.clear()
-                ax_orig.axis('on'); ax_mixed.axis('on')
-                sel = changed_idx[:8]
-                cmap = plt.get_cmap('tab10')
-                for k, i in enumerate(sel):
-                    spec = X_mix[i][order]   # X is unchanged by mixing
-                    col = cmap(k % 10)
-                    ax_orig.plot(wl_sorted, spec, color=col, lw=1.1,
-                                 label=f"#{int(i)}: {y[i]:.3g}")
-                    ax_mixed.plot(wl_sorted, spec, color=col, lw=1.1,
-                                  label=f"#{int(i)}: {y_mix[i]:.3g}")
-                ax_orig.set_title("Affected spectra — TRUE label",
-                                  fontsize=10, fontweight='bold')
-                ax_mixed.set_title("Same spectra — MIXED (wrong) label",
-                                   fontsize=10, fontweight='bold', color='tomato')
-                for a in (ax_orig, ax_mixed):
-                    a.set_xlabel(f"Wavelength ({getattr(self, 'wavelength_unit', 'nm')})",
-                                 fontsize=9)
-                    a.set_ylabel("Reflectance", fontsize=9)
-                    a.legend(fontsize=7, title=prop, loc='best')
-                    a.grid(True, alpha=0.25)
-                fig_spec.suptitle(
-                    f"Showing {len(sel)} of {n_mix} relabelled samples "
-                    f"({frac*100:.0f}% requested)", fontsize=9)
-                canvas_spec.draw()
+                # Mixing swaps labels, it never touches a spectrum - so drawing
+                # the same curves twice (once per label set) showed nothing.
+                # The shared figure instead colours the affected spectra by
+                # their TRUE value and charts where each label was moved to.
+                fig_spec = create_mixing_figure(
+                    self.wavelengths, X_mix, y, y_mix, changed_idx,
+                    prop=prop, unit=getattr(self, 'wavelength_unit', 'nm'),
+                    mix_fraction=frac,
+                    palette=getattr(self, '_palette', None))
+                for child in spec_holder.winfo_children():
+                    child.destroy()
+                _spec_canvas['canvas'] = FigureCanvasTkAgg(fig_spec, spec_holder)
+                _spec_canvas['canvas'].get_tk_widget().pack(fill="both", expand=True)
+                _spec_canvas['canvas'].draw()
 
-                # before → after mapping table
-                map_lines = [f"sample #{int(i):>4}:  {y[i]:.4g}  →  {y_mix[i]:.4g}"
-                             for i in changed_idx[:12]]
-                if n_mix > 12:
-                    map_lines.append(f"… (+{n_mix - 12} more relabelled)")
-                map_lbl.config(text="Label reassignment (true → assigned):\n"
-                                    + "\n".join(map_lines))
+                # before → after mapping, across columns
+                _fill_map_grid(*label_reassignment_rows(y, y_mix, changed_idx))
 
-                interp = (f"✔ Label integrity confirmed — R² dropped by {delta:.4f} after mixing."
+                interp = (f"✔ Label integrity confirmed - R² dropped by {delta:.4f} after mixing."
                           if delta > 0.02 else
-                          f"⚠ Small R² change ({delta:.4f}) — labels may not carry strong signal.")
+                          f"⚠ Small R² change ({delta:.4f}) - labels may not carry strong signal.")
                 result_lbl2.config(
                     text=(f"Original R²={r2_orig:.4f}  |  "
                           f"Mixed R²={r2_mix:.4f}  |  "
@@ -394,7 +590,7 @@ class DialogsMixin:
     def show_spectral_harmonization(self):
         """Open a dialog for cross-sensor spectral transfer functions."""
         win = tk.Toplevel(self)
-        win.title("Spectral Harmonization — Transfer Function")
+        win.title("Spectral Harmonization - Transfer Function")
         win.geometry("740x680")
         win.resizable(True, True)
 
@@ -423,7 +619,7 @@ class DialogsMixin:
                 var.set(p)
                 label_w.config(text=os.path.basename(p))
 
-        ttk.Label(frame, text="Source spectra (SoilPro / field instrument):",
+        ttk.Label(frame, text="Source spectra (field instrument):",
                   font=('Helvetica', 9, 'bold')).grid(
                       row=0, column=0, columnspan=3, sticky="w", pady=(0, 2))
         src_lbl = ttk.Label(frame, text="No file selected", foreground="grey")
@@ -517,7 +713,7 @@ class DialogsMixin:
                 ax_tf.fill_between(wl_nm_t, r2_per_band, alpha=0.15, color='steelblue')
                 ax_tf.set_xlabel("Wavelength (nm)", fontsize=10)
                 ax_tf.set_ylabel("R²", fontsize=10)
-                ax_tf.set_title("Transfer Function Quality — Per-band R²", fontsize=11, fontweight='bold')
+                ax_tf.set_title("Transfer Function Quality - Per-band R²", fontsize=11, fontweight='bold')
                 ax_tf.set_ylim(0, 1.05)
                 ax_tf.legend(fontsize=9)
                 canvas_tf.draw()
@@ -688,7 +884,7 @@ class DialogsMixin:
                            color='crimson', alpha=0.8, label='Harmonized (mean)', linewidth=1.5)
                 ax_ap.set_xlabel("Wavelength (nm)", fontsize=10)
                 ax_ap.set_ylabel("Reflectance", fontsize=10)
-                ax_ap.set_title("Harmonized Spectra — Mean Comparison", fontsize=11, fontweight='bold')
+                ax_ap.set_title("Harmonized Spectra - Mean Comparison", fontsize=11, fontweight='bold')
                 ax_ap.legend(fontsize=9)
                 canvas_ap.draw()
 

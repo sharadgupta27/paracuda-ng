@@ -7,7 +7,8 @@ import pandas as pd
 import numpy as np
 import joblib
 from datetime import datetime
-from models.batch_processing import assess_overfitting
+from models.batch_processing import (assess_overfitting, compute_rpd,
+                                     compute_nrmsep, rpd_quality)
 
 def save_results_to_excel(output_filename, results_data):
     """
@@ -30,25 +31,44 @@ def save_results_to_excel(output_filename, results_data):
             })
             correlogram_df.to_excel(writer, sheet_name=f'Correlogram_{results_data["model_type"]}', index=False)
             
-            # Performance metrics
+            # Performance metrics.  RMSEP is the held-out RMSE under its
+            # chemometric name; nRMSEP is a percentage of the observed range and
+            # RPD is SD/RMSE, so errors stay comparable between properties.
+            _test_rpd = results_data.get('test_rpd')
+            _test_nrmsep = results_data.get('test_nrmsep')
+            if _test_rpd is None and results_data.get('y_test') is not None:
+                _test_rpd = compute_rpd(results_data['y_test'],
+                                        rmse=results_data['test_rmse'])
+            if _test_nrmsep is None and results_data.get('y_test') is not None:
+                _test_nrmsep = compute_nrmsep(results_data['y_test'],
+                                              rmse=results_data['test_rmse'])
             performance_data = {
-                'Metric': ['Test R²', 'Test RMSE', 'Train R²', 'Train RMSE', 'Test Size', 
-                          'Soil Property', 'Preprocessing', 'Number of Cores'],
-                'Value': [results_data['test_r2'], results_data['test_rmse'], 
-                         results_data['train_r2'], results_data['train_rmse'],
-                         results_data['test_size'], results_data['selected_property'], 
-                         results_data['preprocessing'], results_data['n_cores']]
+                'Metric': ['Test R²', 'Test RMSE', 'Test RMSEP',
+                           'Test nRMSEP (% of range)', 'Test RPD', 'RPD Quality',
+                           'Train R²', 'Train RMSE', 'Train RPD',
+                           'Train nRMSEP (% of range)', 'Test Size',
+                           'Soil Property', 'Preprocessing', 'Number of Cores'],
+                'Value': [results_data['test_r2'], results_data['test_rmse'],
+                          results_data.get('test_rmsep', results_data['test_rmse']),
+                          _test_nrmsep, _test_rpd, rpd_quality(_test_rpd),
+                          results_data['train_r2'], results_data['train_rmse'],
+                          results_data.get('train_rpd'),
+                          results_data.get('train_nrmsep'),
+                          results_data['test_size'], results_data['selected_property'],
+                          results_data['preprocessing'], results_data['n_cores']]
             }
             
             # Add cross-validation results if available
             if results_data.get('cv_results'):
                 cv_results = results_data['cv_results']
                 performance_data['Metric'].extend([
-                    'CV Strategy', 'CV R² Mean', 'CV R² Std', 'CV RMSE Mean', 'CV RMSE Std'
+                    'CV Strategy', 'CV R² Mean', 'CV R² Std', 'CV RMSE Mean', 'CV RMSE Std',
+                    'CV RPD', 'CV nRMSEP (% of range)'
                 ])
                 performance_data['Value'].extend([
                     cv_results['strategy'], cv_results['r2_mean'], cv_results['r2_std'],
-                    cv_results['rmse_mean'], cv_results['rmse_std']
+                    cv_results['rmse_mean'], cv_results['rmse_std'],
+                    cv_results.get('cv_rpd'), cv_results.get('cv_nrmsep')
                 ])
                 
                 # Add K-fold specific information
@@ -346,19 +366,19 @@ def save_unknown_predictions_to_excel(output_filename, input_df, predictions,
     Save predictions made on *unseen* (unknown label) tabular spectral data.
 
     The output Excel has two sheets:
-      • Predictions – original input columns + a new column with the
+      • Predictions - original input columns + a new column with the
         model's predicted values.
-      • Summary     – row-level statistics (mean, std, CV%) of the
+      • Summary     - row-level statistics (mean, std, CV%) of the
         prediction column.
 
     Parameters
     ----------
     output_filename : str
-    input_df        : DataFrame  – the original loaded DataFrame
-    predictions     : array-like – model predictions (one per row)
+    input_df        : DataFrame  - the original loaded DataFrame
+    predictions     : array-like - model predictions (one per row)
     property_name   : str
     model_type      : str
-    wavelength_unit : str        – "nm" or "μm" (for metadata)
+    wavelength_unit : str        - "nm" or "μm" (for metadata)
     """
     try:
         out_df = input_df.copy()
@@ -392,15 +412,15 @@ def save_unknown_predictions_to_excel(output_filename, input_df, predictions,
 
 def save_resampled_tabular_to_excel(output_filename, id_df, X_resampled, wavelengths,
                                     wavelength_unit="nm"):
-    """Save a resampled spectral matrix so the user can validate resampling —
+    """Save a resampled spectral matrix so the user can validate resampling -
     column headers are the actual target wavelengths used for prediction.
 
     Parameters
     ----------
     output_filename : str
-    id_df           : DataFrame  – non-wavelength columns to preserve (sample
+    id_df           : DataFrame  - non-wavelength columns to preserve (sample
                       IDs etc.), same row order/count as ``X_resampled``
-    X_resampled     : array-like (n_samples, n_wavelengths) — spectra AFTER
+    X_resampled     : array-like (n_samples, n_wavelengths) - spectra AFTER
                       resampling but BEFORE preprocessing, on ``wavelengths``
     wavelengths     : the resampled band centres, same order as the columns
                       of ``X_resampled``

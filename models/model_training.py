@@ -3,6 +3,8 @@ Model training utilities for spectral analysis
 
 @author: Sharad Kumar Gupta
 """
+import re
+
 import numpy as np
 from joblib import Parallel, delayed
 
@@ -22,6 +24,7 @@ PCA = LazyCallable('sklearn.decomposition', 'PCA')
 RandomForestRegressor = LazyCallable('sklearn.ensemble', 'RandomForestRegressor')
 GradientBoostingRegressor = LazyCallable('sklearn.ensemble', 'GradientBoostingRegressor')
 GaussianProcessRegressor = LazyCallable('sklearn.gaussian_process', 'GaussianProcessRegressor')
+MLPRegressor = LazyCallable('sklearn.neural_network', 'MLPRegressor')
 RBF = LazyCallable('sklearn.gaussian_process.kernels', 'RBF')
 C = LazyCallable('sklearn.gaussian_process.kernels', 'ConstantKernel')
 StandardScaler = LazyCallable('sklearn.preprocessing', 'StandardScaler')
@@ -29,6 +32,32 @@ mean_squared_error = LazyCallable('sklearn.metrics', 'mean_squared_error')
 r2_score = LazyCallable('sklearn.metrics', 'r2_score')
 clone = LazyCallable('sklearn.base', 'clone')
 xgb = LazyModule('xgboost')
+
+
+def parse_hidden_layers(value, default=(64, 32)):
+    """Parse an ANN hidden-layer spec into a tuple of positive ints.
+
+    Accepts what a user is likely to type in a text box: ``"64, 32"``,
+    ``"64-32"``, ``"(64, 32)"``, ``"100"``, or an already-built tuple/list.
+    Anything unparseable falls back to *default* rather than raising, so a typo
+    cannot abort a long batch run.
+    """
+    if isinstance(value, (tuple, list)):
+        sizes = [int(v) for v in value if int(v) > 0]
+        return tuple(sizes) if sizes else tuple(default)
+    text = str(value).strip().strip("()[]")
+    if not text:
+        return tuple(default)
+    parts = [p for p in re.split(r"[,\-;x\s]+", text) if p]
+    sizes = []
+    for p in parts:
+        try:
+            n = int(float(p))
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            sizes.append(n)
+    return tuple(sizes) if sizes else tuple(default)
 
 
 def clamp_n_components(model, n_samples, n_features):
@@ -162,6 +191,26 @@ def create_model(model_type, params, n_cores=1):
                 random_state=42
             )
         
+        elif model_type == "Artificial Neural Network":
+            # Multi-layer perceptron.  "64, 32" in the GUI means two hidden
+            # layers of 64 and 32 neurons; a single number means one layer.
+            hidden = parse_hidden_layers(params.get('hidden_layer_sizes', '64, 32'))
+            early = bool(params.get('early_stopping', True))
+            return MLPRegressor(
+                hidden_layer_sizes=hidden,
+                activation=params.get('activation', 'relu'),
+                solver=params.get('solver', 'adam'),
+                alpha=float(params.get('alpha', 1e-4)),
+                learning_rate_init=float(params.get('learning_rate_init', 1e-3)),
+                max_iter=int(params.get('max_iter', 2000)),
+                # A validation split only makes sense with enough samples; the
+                # GUI default keeps it on, and sklearn needs >= 2 rows to split.
+                early_stopping=early,
+                validation_fraction=float(params.get('validation_fraction', 0.1)),
+                n_iter_no_change=int(params.get('n_iter_no_change', 20)),
+                random_state=42,
+            )
+
         elif model_type == "XGBoost":
             return xgb.XGBRegressor(
                 n_estimators=int(params['n_estimators']),
@@ -264,12 +313,17 @@ def parse_parameter_value(param_name, param_value, param_type):
         elif param_value.lower() in ["true", "false"]:
             return param_value.lower() == "true"
         elif param_type in ["n_estimators", "max_depth", "min_samples_split", "min_samples_leaf",
-                           "n_components", "degree", "max_iter", "n_restarts_optimizer"]:
+                           "n_components", "degree", "max_iter", "n_restarts_optimizer",
+                           "n_iter_no_change"]:
             return int(float(param_value)) if param_value.lower() != "none" else None
         elif param_type in ["alpha", "C", "epsilon", "tol", "learning_rate", "subsample",
                            "colsample_bytree", "reg_alpha", "reg_lambda", "l1_ratio",
-                           "length_scale"]:
+                           "length_scale", "learning_rate_init", "validation_fraction"]:
             return float(param_value)
+        elif param_type == "hidden_layer_sizes":
+            # Free text such as "64, 32"; validated by parse_hidden_layers when
+            # the estimator is built, so a typo cannot abort a batch run here.
+            return param_value
         else:
             return param_value
     except:

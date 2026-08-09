@@ -296,8 +296,12 @@ class AnalysisMixin:
                 'test_r2':         result['test_r2'],
                 'test_rmse':       result['test_rmse'],
                 'test_mae':        result.get('test_mae'),
+                'test_rpd':        result.get('test_rpd'),
+                'test_nrmsep':     result.get('test_nrmsep'),
                 'train_r2':        result['train_r2'],
                 'train_rmse':      result['train_rmse'],
+                'train_rpd':       result.get('train_rpd'),
+                'train_nrmsep':    result.get('train_nrmsep'),
                 'test_size':       float(self.test_size_var.get()),
                 'selected_property': property_name,
                 'preprocessing':   preprocess_name,
@@ -350,7 +354,7 @@ class AnalysisMixin:
     def _filtered_column_indices(self):
         """Column indices of ``self.wavelengths`` kept by the wavelength filter.
 
-        Selects by MEMBERSHIP in ``self.filtered_wavelengths`` — NOT by a
+        Selects by MEMBERSHIP in ``self.filtered_wavelengths`` - NOT by a
         min/max span.  Excluded interior regions (water-absorption bands, noisy
         edges) sit *between* the min and max, so a span test silently keeps them
         in X while ``filtered_wavelengths`` has already dropped them.  X would
@@ -421,12 +425,12 @@ class AnalysisMixin:
             except (TypeError, ValueError):
                 return f"{'-':>{width}}"
 
-        self.append_status("\n" + "─" * 88 + "\n")
+        self.append_status("\n" + "─" * 110 + "\n")
         self.append_status(f"MODEL SUMMARY - {property_name} (ranked by Score):\n")
         self.append_status(
             f"{'Rank':<5} {'Model':<22} {'Train R2':>9} {'Test R2':>9} "
-            f"{'Test RMSE':>10} {'CV R2':>8}  {'Overfit':<8}\n")
-        self.append_status("─" * 88 + "\n")
+            f"{'RMSEP':>10} {'nRMSEP%':>9} {'RPD':>7} {'CV R2':>8}  {'Overfit':<8}\n")
+        self.append_status("─" * 110 + "\n")
 
         for rank, (_, row) in enumerate(comparison_df.iterrows(), 1):
             overfit = row.get('Overfitting_Flag', False)
@@ -436,8 +440,12 @@ class AnalysisMixin:
             self.append_status(
                 f"{rank:<5} {str(row['Model'])[:22]:<22} "
                 f"{_fmt(row.get('Train_R2'), 9)} {_fmt(row.get('Test_R2'), 9)} "
-                f"{_fmt(row.get('Test_RMSE'), 10)} {_fmt(cv_val, 8)}  {overfit_tag:<8}\n")
-        self.append_status("─" * 88 + "\n\n")
+                f"{_fmt(row.get('Test_RMSE'), 10)} {_fmt(row.get('Test_nRMSEP'), 9, 2)} "
+                f"{_fmt(row.get('Test_RPD'), 7, 3)} {_fmt(cv_val, 8)}  {overfit_tag:<8}\n")
+        self.append_status("─" * 110 + "\n")
+        self.append_status(
+            "  RMSEP = RMSE on the held-out split | nRMSEP = % of observed range | "
+            "RPD = SD/RMSE (>2 good, >2.5 excellent)\n\n")
 
     def run_batch_analysis(self):
         """Public entry: run batch analysis with the window pinned and busy-guarded."""
@@ -600,7 +608,7 @@ class AnalysisMixin:
                         progress_base=slice_start, progress_span=search_span)
 
                     if best_pp is None:
-                        # Search failed for this property — message already shown.
+                        # Search failed for this property - message already shown.
                         # In a multi-property run keep going with the others.
                         if not multi:
                             return
@@ -647,7 +655,7 @@ class AnalysisMixin:
                     # to saveable state (winning preprocessing + hyper-parameters), as
                     # a plain single run would.  With several properties each has its
                     # OWN winner and `save_model` can only hold one, so the Save button
-                    # stays off — exactly as in a normal multi-property batch run.
+                    # stays off - exactly as in a normal multi-property batch run.
                     if not multi:
                         self._promote_result_to_saveable(
                             best_result, property_name, model_label=best_mdl)
@@ -722,7 +730,9 @@ class AnalysisMixin:
                                     f"RMSE={result['test_rmse']:.4f}, MAE={result['test_mae']:.4f}\n")
                             else:
                                 self.status_text.insert(tk.END, 
-                                    f"✓ {model_name}: R²={result['test_r2']:.4f}, RMSE={result['test_rmse']:.4f}, MAE={result['test_mae']:.4f}\n")
+                                    f"✓ {model_name}: R²={result['test_r2']:.4f}, RMSE={result['test_rmse']:.4f}, "
+                f"MAE={result['test_mae']:.4f}, RPD={result.get('test_rpd', float('nan')):.3f}, "
+                f"nRMSEP={result.get('test_nrmsep', float('nan')):.2f}%\n")
                         else:
                             self.status_text.insert(tk.END, f"✗ {model_name}: Failed\n")
                     
@@ -910,7 +920,7 @@ class AnalysisMixin:
             
             # Save-model availability: a single-property batch (even with
             # Auto-Select Best / batch models / hyper-parameter tuning) still has
-            # ONE winning model, so promote it to saveable state and enable Save —
+            # ONE winning model, so promote it to saveable state and enable Save -
             # it saves exactly like a plain single run (best model + its params +
             # preprocessing + resampling config).  Multi-property runs have no
             # single model to save, so the button stays disabled.
@@ -1011,7 +1021,10 @@ class AnalysisMixin:
                     if hasattr(self, 'baseline_degree_var'):
                         preprocess_kwargs['degree'] = int(self.baseline_degree_var.get())
             
-            # Preprocess spectra
+            # Preprocess spectra.  Multiplicative Scatter Correction is fitted on
+            # the training spectra, so the reference is captured into the kwargs
+            # that get saved with the model.
+            ensure_msc_reference(X, active_preprocess, preprocess_kwargs)
             if active_preprocess == "Spectral Outlier Removal":
                 X, outlier_mask = preprocess_spectra(X, active_preprocess, **preprocess_kwargs)
                 # Apply mask to y as well to keep samples aligned
@@ -1023,7 +1036,7 @@ class AnalysisMixin:
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Target-variable outlier removal (drop samples whose property value
-            # is an outlier) — runs on y and its paired spectra before the split.
+            # is an outlier) - runs on y and its paired spectra before the split.
             X, y = self._apply_target_outlier_removal(X, y, property_name=property_name)
 
             # Split data
@@ -1060,7 +1073,7 @@ class AnalysisMixin:
             
             # Component optimization for PLS-R whenever the Optimize Components box
             # is checked.  In batch mode the single-model selector is disabled, so
-            # this is NOT gated on ``model_name == self.model_var.get()`` — every
+            # this is NOT gated on ``model_name == self.model_var.get()`` - every
             # PLS-R model in the run is optimized when the box is on.
             if (self.optimize_components_var.get() and model_name in ["PLS-R"]):
                 max_components = min(50, X_train.shape[1], X_train.shape[0] - 1)
@@ -1120,7 +1133,12 @@ class AnalysisMixin:
             train_r2 = r2_score(y_train, y_train_pred)
             train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
             train_mae = mean_absolute_error(y_train, y_train_pred)
-            
+            # RPD and normalized RMSEP on both splits (see models/batch_processing).
+            test_rpd = compute_rpd(y_test, rmse=test_rmse)
+            test_nrmsep = compute_nrmsep(y_test, rmse=test_rmse)
+            train_rpd = compute_rpd(y_train, rmse=train_rmse)
+            train_nrmsep = compute_nrmsep(y_train, rmse=train_rmse)
+
             # Calculate 95% confidence intervals
             confidence_intervals = calculate_confidence_interval(y_test, y_pred, confidence=0.95)
             
@@ -1192,7 +1210,10 @@ class AnalysisMixin:
                     'rmse_std': cv_rmse_std,
                     'r2_mean': cv_r2_mean,
                     'r2_std': cv_r2_std,
-                    'parameters': cv_params
+                    'parameters': cv_params,
+                    # RPD / normalized RMSEP for the CV error, against the
+                    # training targets on their original scale.
+                    **cv_derived_metrics(y_train, cv_rmse_mean),
                 }
             
             self.update_progress(progress_base + progress_range, "Complete")
@@ -1215,7 +1236,10 @@ class AnalysisMixin:
                 'y_pred': y_pred,
                 'test_r2': test_r2,
                 'test_rmse': test_rmse,
+                'test_rmsep': test_rmse,   # RMSE on the held-out split = RMSEP
                 'test_mae': test_mae,
+                'test_rpd': test_rpd,
+                'test_nrmsep': test_nrmsep,
                 'confidence_intervals': confidence_intervals,
                 # Training-set observations/predictions, kept so callers can draw
                 # a training scatter alongside the test one.
@@ -1224,6 +1248,8 @@ class AnalysisMixin:
                 'train_r2': train_r2,
                 'train_rmse': train_rmse,
                 'train_mae': train_mae,
+                'train_rpd': train_rpd,
+                'train_nrmsep': train_nrmsep,
                 'overfitting_gap': overfitting_gap,
                 'overfitting_flag': overfitting_flag,
                 'overfitting_severity': assessment['severity'],
@@ -1319,7 +1345,7 @@ class AnalysisMixin:
             # Build spectra X and composition Y
             X = self.df[self.wavelengths].values.astype(float)
             Y = self.df[parts].values.astype(float)
-            # Membership, not a min/max span — see _filtered_column_indices.
+            # Membership, not a min/max span - see _filtered_column_indices.
             X = X[:, self._filtered_column_indices()]
 
             # Joint clean: keep rows finite in X and all parts, with a positive sum.
@@ -1339,6 +1365,7 @@ class AnalysisMixin:
                                      srf_table=self.srf_table)
             pp_method = self.preprocess_var.get()
             pp_kwargs = self._current_preprocess_kwargs()
+            ensure_msc_reference(X, pp_method, pp_kwargs)
             if pp_method == "Spectral Outlier Removal":
                 X, omask = preprocess_spectra(X, pp_method, **pp_kwargs)
                 Y = Y[omask]
@@ -1644,7 +1671,10 @@ class AnalysisMixin:
                 if hasattr(self, 'baseline_degree_var'):
                     preprocess_kwargs['degree'] = int(self.baseline_degree_var.get())
             
-            # Preprocess spectra
+            # Preprocess spectra.  Multiplicative Scatter Correction is fitted on
+            # the training spectra, so the reference is captured into the kwargs
+            # that get saved with the model.
+            ensure_msc_reference(X, self.preprocess_var.get(), preprocess_kwargs)
             if self.preprocess_var.get() == "Spectral Outlier Removal":
                 X, outlier_mask = preprocess_spectra(X, self.preprocess_var.get(), **preprocess_kwargs)
                 # Apply mask to y as well to keep samples aligned
@@ -1666,7 +1696,7 @@ class AnalysisMixin:
                 self.status_text.see(tk.END)
 
             # Target-variable outlier removal (drop samples whose selected
-            # property value is an outlier) — runs on y and its paired spectra
+            # property value is an outlier) - runs on y and its paired spectra
             # before the split.
             X, y = self._apply_target_outlier_removal(X, y, property_name=self.selected_property)
 
@@ -1770,7 +1800,14 @@ class AnalysisMixin:
             test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
             train_r2 = r2_score(y_train, y_train_pred)
             train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-            
+            # RPD and normalized RMSEP (see models/batch_processing for the
+            # definitions and the RPD quality bands).
+            test_rpd = compute_rpd(y_test, rmse=test_rmse)
+            test_nrmsep = compute_nrmsep(y_test, rmse=test_rmse)
+            train_rpd = compute_rpd(y_train, rmse=train_rmse)
+            train_nrmsep = compute_nrmsep(y_train, rmse=train_rmse)
+
+
             # Cross-validation if requested
             cv_results = None
             if self.cv_strategy_var.get() != "None":
@@ -1802,7 +1839,10 @@ class AnalysisMixin:
                     'rmse_std': cv_rmse_std,
                     'r2_mean': cv_r2_mean,
                     'r2_std': cv_r2_std,
-                    'parameters': cv_params
+                    'parameters': cv_params,
+                    # RPD / normalized RMSEP for the CV error, against the
+                    # training targets on their original scale.
+                    **cv_derived_metrics(y_train, cv_rmse_mean),
                 }
             
             self.update_progress(90, "Calculating correlations and confidence intervals...")
@@ -1877,10 +1917,15 @@ class AnalysisMixin:
                 'y_pred': y_pred,
                 'test_r2': test_r2,
                 'test_rmse': test_rmse,
+                'test_rmsep': test_rmse,   # RMSE on the held-out split = RMSEP
                 'test_mae': test_mae,
+                'test_rpd': test_rpd,
+                'test_nrmsep': test_nrmsep,
                 'confidence_intervals': confidence_intervals,
                 'train_r2': train_r2,
                 'train_rmse': train_rmse,
+                'train_rpd': train_rpd,
+                'train_nrmsep': train_nrmsep,
                 'test_size': test_size,
                 'selected_property': self.selected_property,
                 'preprocessing': self.preprocess_var.get(),
@@ -1961,8 +2006,19 @@ class AnalysisMixin:
             else:
                 self.status_text.insert(tk.END, f"Test R² = {test_r2:.4f}, Test RMSE = {test_rmse:.4f}\n")
                 self.status_text.insert(tk.END, f"Test MAE = {test_mae:.4f}\n")
-            
+
+            # RPD (SD/RMSE) and normalized RMSEP (% of observed range) put the
+            # error on a scale that is comparable between properties.
+            self.status_text.insert(
+                tk.END,
+                f"Test RMSEP = {test_rmse:.4f}, "
+                f"nRMSEP = {test_nrmsep:.2f}% of range, "
+                f"RPD = {test_rpd:.3f} ({rpd_quality(test_rpd)})\n")
             self.status_text.insert(tk.END, f"Train R² = {train_r2:.4f}, Train RMSE = {train_rmse:.4f}\n")
+            self.status_text.insert(
+                tk.END,
+                f"Train nRMSEP = {train_nrmsep:.2f}% of range, "
+                f"RPD = {train_rpd:.3f} ({rpd_quality(train_rpd)})\n")
 
             # Overfitting detection - report only when multiple measures agree
             if overfit['flag']:

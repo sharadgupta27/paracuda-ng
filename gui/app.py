@@ -1,8 +1,8 @@
 """
-Paracuda III main application window.
+PARACUDA-NG main application window.
 
 This file keeps the constructor and the window-lifecycle helpers for the
-``SpectralAnalyzer`` GUI class; the remaining methods live in the other
+``Paracuda`` GUI class; the remaining methods live in the other
 ``gui/*_mixin.py`` modules.
 
 @author: Sharad Kumar Gupta
@@ -15,25 +15,32 @@ from gui.data_io_mixin import DataIOMixin
 from gui.analysis_mixin import AnalysisMixin
 from gui.dialogs_mixin import DialogsMixin
 from gui.flowchart_mixin import FlowChartMixin
+from utils.window_icon import apply_icon, set_app_user_model_id
 
-# Shared theme — bring the main window up to the Data Converter's card look and
+# Shared theme - bring the main window up to the Data Converter's card look and
 # honour the user's Theme-menu choice.  Optional so the app still starts if the
 # module is missing.
 try:
-    from paracuda_theme import (get_palette, load_theme_name, save_theme_name,
-                                list_palettes, apply_ttk_theme)
+    from paracuda_theme import (get_palette, load_theme_name,
+                                apply_ttk_theme)
     _HAS_THEME = True
 except Exception:
     _HAS_THEME = False
 
 
-class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
+class Paracuda(MenuHelpMixin, LayoutMixin, UIFlowMixin,
                        DataIOMixin, AnalysisMixin, DialogsMixin,
                        FlowChartMixin, tk.Tk):
     def __init__(self):
+        # Must happen before the window exists, or the Windows taskbar keeps
+        # showing the interpreter's icon instead of ours.
+        set_app_user_model_id()
         super().__init__()
-        self.iconbitmap('icon.ico')
-        self.title("Paracuda III")
+        # The icon sits next to this tree's root rather than in the working
+        # directory, so resolve it relative to the package (see
+        # utils/window_icon.py) instead of trusting the CWD.
+        apply_icon(self)
+        self.title("PARACUDA-NG")
         # self.geometry("850x880")
         self.resizable(True, True)
 
@@ -433,10 +440,74 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
                         "help": "L1 regularization term on weights"
                     },
                     "reg_lambda": {
-                        "label": "Reg Lambda", 
-                        "default": "1.0", 
+                        "label": "Reg Lambda",
+                        "default": "1.0",
                         "type": "entry",
                         "help": "L2 regularization term on weights"
+                    }
+                }
+            },
+            "Artificial Neural Network": {
+                "params": {
+                    "hidden_layer_sizes": {
+                        "label": "Hidden Layers",
+                        "default": "64, 32",
+                        "type": "entry",
+                        "help": ("Neurons per hidden layer, comma separated. "
+                                 "'64, 32' = two layers; '100' = one layer")
+                    },
+                    "activation": {
+                        "label": "Activation",
+                        "default": "relu",
+                        "type": "combobox",
+                        "values": ["relu", "tanh", "logistic", "identity"],
+                        "help": "Activation function for the hidden layers"
+                    },
+                    "solver": {
+                        "label": "Solver",
+                        "default": "adam",
+                        "type": "combobox",
+                        "values": ["adam", "lbfgs", "sgd"],
+                        "help": ("Weight optimizer. adam suits most datasets; "
+                                 "lbfgs can be better for small ones")
+                    },
+                    "alpha": {
+                        "label": "Alpha (L2)",
+                        "default": "0.0001",
+                        "type": "entry",
+                        "help": "L2 penalty. Raise it if the network overfits"
+                    },
+                    "learning_rate_init": {
+                        "label": "Learning Rate",
+                        "default": "0.001",
+                        "type": "entry",
+                        "help": "Initial step size (adam / sgd only)"
+                    },
+                    "max_iter": {
+                        "label": "Max Iterations",
+                        "default": "2000",
+                        "type": "entry",
+                        "help": "Maximum training epochs"
+                    },
+                    "early_stopping": {
+                        "label": "Early Stopping",
+                        "default": "True",
+                        "type": "combobox",
+                        "values": ["True", "False"],
+                        "help": ("Hold out part of the training set and stop when "
+                                 "it stops improving. Needs enough samples")
+                    },
+                    "validation_fraction": {
+                        "label": "Validation Fraction",
+                        "default": "0.1",
+                        "type": "entry",
+                        "help": "Share of training data held out for early stopping"
+                    },
+                    "n_iter_no_change": {
+                        "label": "Patience",
+                        "default": "20",
+                        "type": "entry",
+                        "help": "Epochs without improvement before stopping early"
                     }
                 }
             }
@@ -481,7 +552,7 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
         # Close any matplotlib figures while the Tk interpreter is still alive, so
         # their canvases/PhotoImages are released now instead of by the GC after
         # teardown (which prints "main thread is not in main loop").  Only if
-        # pyplot was actually imported — don't force the heavy import on exit.
+        # pyplot was actually imported - don't force the heavy import on exit.
         try:
             import sys
             if 'matplotlib.pyplot' in sys.modules:
@@ -506,7 +577,7 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
             pass
 
     def _open_data_converter(self):
-        """Open the Paracuda Data Converter in a separate window."""
+        """Open the PARACUDA-NG Data Converter in a separate window."""
         if not _HAS_CONVERTER:
             tk.messagebox.showerror(
                 "Not available",
@@ -514,10 +585,12 @@ class SpectralAnalyzer(MenuHelpMixin, LayoutMixin, UIFlowMixin,
                 "Make sure it is in the same folder as paracuda.py."
             )
             return
-        # Run in a new Toplevel-compatible process so it has its own mainloop
+        # Run in a new Toplevel-compatible process so it has its own mainloop.
+        # Launched with -m from the repo root rather than by file path, so the
+        # converter's own ``utils.*`` / ``paracuda_theme`` imports resolve without
+        # the module having to patch sys.path at import time.
         import subprocess, sys
-        # data_converter.py lives in the utils/ package, one level up from gui/.
         repo_root = os.path.dirname(os.path.dirname(__file__))
         subprocess.Popen(
-            [sys.executable, os.path.join(repo_root, "utils", "data_converter.py")]
+            [sys.executable, "-m", "utils.data_converter"], cwd=repo_root
         )

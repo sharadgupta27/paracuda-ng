@@ -1,0 +1,20 @@
+# Normalise line endings so the three PARACUDA-NG trees stay byte-comparable
+# across Windows / Linux / macOS checkouts.
+* text=auto eol=lf
+
+# Windows-only launchers must keep CRLF or cmd.exe mis-parses them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets - never touch these.
+*.png binary
+*.ico binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary
+*.xls  binary
+*.ods  binary
+*.db   binary
+*.zip  binary
+*.joblib binary
+*.pkl  binary

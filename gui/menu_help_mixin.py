@@ -7,14 +7,69 @@ from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
 # ── Software metadata (keep in sync with README.md) ────────────────────────────
+# The version is shared by all three PARACUDA-NG channels: this desktop tool,
+# the PyPI package (paracuda/__init__.py, pyproject.toml) and the QGIS plugin
+# (paracuda_ng/metadata.txt).  They are released together, so they carry the
+# same number.
+PARACUDA_VERSION = "1.0.0"
 PARACUDA_AUTHOR = "Sharad Kumar Gupta"
-PARACUDA_REPO_URL = "https://github.com/sharadgupta27/paracuda"
+PARACUDA_REPO_URL = "https://github.com/sharadgupta27/paracuda-ng"
 PARACUDA_CONTACT = "sharadgupta27@gmail.com"
-PARACUDA_LICENSE = "Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0)"
+PARACUDA_LICENSE = "MIT License"
 
-# ── What's New — changes since the last release ────────────────────────────────
+# ── What's New - changes since the last release ────────────────────────────────
 # Newest release first. Each entry: (heading, [bullet, ...]).
 WHATS_NEW = [
+    ("Loading data", [
+        "Every data load - Step ① Data, tabular prediction and the Data "
+        "Converter - now goes through the same fast reader and reports its "
+        "progress instead of leaving the window blank while it works.",
+        "Loading a large file in the Data Converter no longer freezes the "
+        "window: the read runs on a background thread behind a progress bar "
+        "that shows real percentages for CSV and row counts for spreadsheets.",
+        "Spreadsheets load about 2.5x faster. python-calamine is used when it "
+        "is installed; otherwise a built-in streaming .xlsx reader handles "
+        "plain grids, falling back to pandas for anything unusual.",
+        "Picking a large workbook is instant - the sheet list is read from the "
+        "file's index instead of opening the whole workbook.",
+    ]),
+    ("Data Distribution", [
+        "One property at a time, chosen from a drop-down, instead of every "
+        "property crammed into one unreadable sheet. The drop-down flags which "
+        "properties have problems.",
+        "Each property now gets a histogram with a normal reference, a boxplot, "
+        "a normal Q-Q plot and a cumulative distribution, plus its statistics "
+        "beside the plots.",
+        "'Save All Properties' still exports the whole-dataset overview sheet.",
+    ]),
+    ("Spectral Configuration", [
+        "The + H₂O bands and + Noisy edges buttons now merge into the Omit "
+        "field instead of appending, so pressing one twice no longer stacks "
+        "duplicate ranges.",
+        "Noisy edges follow the selected spectral domain: 350-400 / 2450-2500 "
+        "nm for VSWIR, the MCT detector limits for LWIR, and both together for "
+        "VSWIR+LWIR. A hint under the buttons names what each preset will add.",
+    ]),
+    ("Tools & Layout", [
+        "'Randomize' is now 'Check Spectral Integrity' and 'Harmonize' is now "
+        "'Spectral Harmonization'.",
+        "The Mixing Applied view no longer draws the same spectra twice. It "
+        "colours the affected spectra by their true value and adds a slope "
+        "chart showing where each label was moved to.",
+        "The label-reassignment list is laid out across columns instead of one "
+        "tall column.",
+        "Hyperparameter labels are no longer truncated ('Min Samples Split', "
+        "'Validation Fraction'), have proper spacing from their fields, and "
+        "each carries its explanation as a tooltip.",
+        "The parameter grid keeps its place in the Model panel when the "
+        "algorithm is changed.",
+    ]),
+    ("Help", [
+        "The Help Assistant renders its topics properly: bold and code spans "
+        "are formatted rather than shown as ** and ` characters, and wrapped "
+        "lines stay indented under the bullet or step they belong to.",
+        "Help → Complete Workflow Guide lines up with the rest of the menu.",
+    ]),
     ("Performance", [
         "Typing in the Min/Max Wave fields no longer stutters - the live "
         "process-flow preview used to rebuild itself on every keystroke, which "
@@ -48,7 +103,7 @@ WHATS_NEW = [
         "tab, so progress is visible as it happens.",
         "The log now explains why Save Model is disabled for multi-property "
         "runs instead of leaving the button greyed out without a reason.",
-        "Help -> About Paracuda III now shows the creator, a link to the source "
+        "Help -> About PARACUDA-NG now shows the creator, a link to the source "
         "code, and contact information.",
     ]),
 ]
@@ -68,7 +123,7 @@ class MenuHelpMixin:
             command=self._open_data_converter,
         )
 
-        # View menu — colour theme selection (applies to the whole software).
+        # View menu - colour theme selection (applies to the whole software).
         try:
             from paracuda_theme import list_palettes
             palettes = list_palettes()
@@ -99,11 +154,16 @@ class MenuHelpMixin:
         # correction, missing data, hyperparameter tuning, the flow chart,
         # model portability, overfitting, ...) is a keyword away inside
         # "Ask Help Assistant" itself, so it does not need its own menu entry.
+        #
+        # Icons are bare emoji code points - never followed by U+FE0F.  Tk on
+        # Windows draws the variation selector as its own (blank) cell, which is
+        # what pushed "Complete Workflow Guide" one column right of every other
+        # entry in the menu.
         help_menu.add_command(label="📖 Getting Started",
                               command=lambda: self.show_help_topic("getting_started"))
         help_menu.add_command(label="📂 Loading Data",
                               command=lambda: self.show_help_topic("data_loading"))
-        help_menu.add_command(label="🗺️ Complete Workflow Guide",
+        help_menu.add_command(label="🗺 Complete Workflow Guide",
                               command=lambda: self.show_help_topic("workflow"))
         help_menu.add_command(label="✅ Best Practices",
                               command=lambda: self.show_help_topic("best_practices"))
@@ -112,7 +172,7 @@ class MenuHelpMixin:
         help_menu.add_separator()
         help_menu.add_command(label="🆕 What's New",
                               command=self.show_whats_new)
-        help_menu.add_command(label="ℹ️ About Paracuda III",
+        help_menu.add_command(label="ℹ About PARACUDA-NG",
                               command=self.show_about)
 
     def _set_theme(self, name):
@@ -188,28 +248,33 @@ class MenuHelpMixin:
     def show_about(self):
         """Show About dialog: what the software is, who made it, and how to reach them."""
         win = tk.Toplevel(self)
-        win.title("About Paracuda III")
+        win.title("About PARACUDA-NG")
         win.resizable(False, False)
         win.transient(self)
         frm = ttk.Frame(win, padding=24)
         frm.pack(fill="both", expand=True)
 
-        ttk.Label(frm, text="Paracuda III", font=('Helvetica', 18, 'bold')).pack()
-        ttk.Label(frm, text="Spectral Analysis Tool",
-                  font=('Helvetica', 11)).pack(pady=(2, 12))
+        ttk.Label(frm, text="PARACUDA-NG", font=('Helvetica', 18, 'bold')).pack()
+        ttk.Label(frm, text="PARAmetric CUbe Data Analysis, Next Generation",
+                  font=('Helvetica', 11)).pack(pady=(2, 2))
+        ttk.Label(frm, text=f"Version {PARACUDA_VERSION}  ·  desktop",
+                  font=('Helvetica', 9), foreground="#666666").pack(pady=(0, 12))
 
         about_text = (
-            "Paracuda III is a hyperspectral data analysis platform\n"
-            "for soil, vegetation, and other spectroscopy data.\n\n"
+            "PARACUDA-NG is a multispectral and hyperspectral data\n"
+            "analysis platform for soil, vegetation, and other\n"
+            "spectroscopy data.\n\n"
             "Features:\n"
-            "  • Multi-model regression (PLS, RF, XGBoost, SVR, Ridge, …)\n"
+            "  • 12 regression models (PLS-R, RF, XGBoost, SVR, Ridge, …)\n"
             "  • Cross-validation with overfitting detection\n"
             "  • Batch processing across properties and models\n"
-            "  • Spectral preprocessing (10+ methods)\n"
-            "  • Hyperspectral image prediction (GeoTIFF)\n"
+            "  • 7 spectral preprocessing methods\n"
+            "  • Spectral resampling: 7 methods, 11 satellite sensors\n"
+            "  • Multi/hyperspectral image prediction (GeoTIFF, ENVI, …)\n"
             "  • Tabular prediction for unknown samples\n"
             "  • Spectral harmonization / transfer functions\n"
             "  • Data integrity & randomization tests\n"
+            "  • Data Converter for arbitrary instrument layouts\n"
             "  • Portable model files with preprocessing\n\n"
             "Developed for applied spectroscopy research."
         )
@@ -247,7 +312,7 @@ class MenuHelpMixin:
     def show_whats_new(self):
         """Show the What's New dialog: changes since the last release, as bullets."""
         win = tk.Toplevel(self)
-        win.title("What's New — Paracuda III")
+        win.title("What's New - PARACUDA-NG")
         win.geometry("640x520")
         win.minsize(520, 380)
         win.transient(self)
@@ -256,7 +321,7 @@ class MenuHelpMixin:
         frm.pack(fill="both", expand=True)
 
         ttk.Label(frm, text="What's New", font=('Helvetica', 16, 'bold')).pack(anchor="w")
-        ttk.Label(frm, text="Changes since the last release",
+        ttk.Label(frm, text=f"In version {PARACUDA_VERSION}",
                   font=('Helvetica', 10), foreground="#666666").pack(anchor="w", pady=(2, 10))
 
         body = ttk.Frame(frm)
@@ -289,7 +354,7 @@ class MenuHelpMixin:
         try:
             # Create help dialog
             help_dialog = tk.Toplevel(self)
-            help_dialog.title("Paracuda Help Assistant")
+            help_dialog.title("PARACUDA-NG Help Assistant")
             help_dialog.geometry("920x680")
             help_dialog.minsize(720, 500)
             help_dialog.transient(self)
@@ -300,7 +365,6 @@ class MenuHelpMixin:
             FONT_HEADING = ('Segoe UI', 11, 'bold')
             FONT_BODY    = ('Segoe UI', 10)
             FONT_ENTRY   = ('Segoe UI', 10)
-            FONT_BTN     = ('Segoe UI', 10)
 
             # ── Outer padding frame ────────────────────────────────────
             main_frame = ttk.Frame(help_dialog, padding="16 14 16 10")
@@ -314,10 +378,13 @@ class MenuHelpMixin:
             title_frame = ttk.Frame(main_frame)
             title_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
             title_frame.grid_columnconfigure(0, weight=1)
-            ttk.Label(title_frame, text="🤖  Paracuda Help Assistant",
+            ttk.Label(title_frame, text="🤖  PARACUDA-NG Help Assistant",
                       font=FONT_TITLE, foreground="#1a3a5c").grid(row=0, column=0, sticky="w")
-            ttk.Separator(main_frame, orient='horizontal').grid(
-                row=0, column=0, sticky="ew", pady=(42, 0))
+            # The rule belongs under the title, in its own row.  It used to be
+            # placed in the title's grid cell with a 42px top pad, which put it
+            # wherever that guess happened to land.
+            ttk.Separator(title_frame, orient='horizontal').grid(
+                row=1, column=0, sticky="ew", pady=(8, 0))
 
             # ── Query input row ────────────────────────────────────────
             query_frame = ttk.Frame(main_frame)
@@ -367,14 +434,20 @@ class MenuHelpMixin:
             response_text.config(highlightbackground="#c8d0de", highlightthickness=1)
 
             # ── Text tags ─────────────────────────────────────────────
+            # Paragraph tags (para_*) are created on demand per indent level by
+            # _display_formatted_help; these are the fixed ones.  "strong" and
+            # "code" are character tags layered on top of a paragraph tag, so
+            # inline emphasis never disturbs the margins.
             response_text.tag_configure("title",
                 font=('Segoe UI', 13, 'bold'), foreground="#1a3a5c",
-                spacing1=8, spacing3=4)
+                spacing1=8, spacing3=4, lmargin1=4, lmargin2=4)
             response_text.tag_configure("section",
                 font=('Segoe UI', 11, 'bold'), foreground="#1a4a7a",
-                spacing1=6, spacing3=2)
-            response_text.tag_configure("bullet",
-                font=FONT_BODY, lmargin1=22, lmargin2=38, spacing1=1)
+                spacing1=8, spacing3=2, lmargin1=4, lmargin2=4)
+            response_text.tag_configure("rule",
+                foreground="#c8d0de", spacing1=2, spacing3=2, lmargin1=4)
+            response_text.tag_configure("strong",
+                font=('Segoe UI', 10, 'bold'), foreground="#1a3a5c")
             response_text.tag_configure("code",
                 font=('Consolas', 9), background="#eef2f8",
                 foreground="#333333", relief=tk.FLAT)
@@ -428,52 +501,75 @@ class MenuHelpMixin:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open help: {str(e)}")
     
+    # Section headings that earn a "more about ..." link.
+    _INFO_LINK_KEYWORDS = (
+        ("models", "📘 More about models",
+         ("PLS-R", "SVM", "Random Forest", "XGBoost", "Ridge", "Lasso",
+          "Elastic Net", "Huber", "Gradient Boosting", "Gaussian Process",
+          "Linear Regression", "Multiple Linear")),
+        ("cross_validation", "📘 More about CV",
+         ("K-Fold", "Leave-One-Out", "Leave-P-Out", "cross validation",
+          "Cross-Validation")),
+        ("metrics", "📘 More about metrics",
+         ("R²", "RMSE", "R-Squared", "Root Mean Square")),
+    )
+
     def _display_formatted_help(self, text_widget, content):
-        """Display help content with formatting and clickable info buttons"""
-        lines = content.split('\n')
-        
-        # Keywords that should have info buttons
-        model_keywords = ["PLS-R", "SVM", "Random Forest", "XGBoost", "Ridge", "Lasso", 
-                         "Elastic Net", "Huber", "Gradient Boosting", "Gaussian Process", 
-                         "Linear Regression", "Multiple Linear"]
-        cv_keywords = ["K-Fold", "Leave-One-Out", "Leave-P-Out", "cross validation", "Cross-Validation"]
-        metric_keywords = ["R²", "RMSE", "R-Squared", "Root Mean Square"]
-        
-        for line in lines:
-            if line and line[0] != ' ' and '=' in line and '=' * 10 in line:
-                # This is an underline for a title, skip it
-                continue
-            elif line and not line.startswith(' ') and ':' not in line[:50] and len(line) < 60:
-                # This might be a title
-                if line.strip() and not line.startswith('•') and not line.startswith('-'):
-                    text_widget.insert(tk.END, line + '\n', "title")
-                else:
-                    text_widget.insert(tk.END, line + '\n')
-            elif line.strip().startswith('**') and line.strip().endswith('**'):
-                # Bold section headers - check for keywords and add info buttons
-                clean_line = line.replace('**', '').strip()
-                text_widget.insert(tk.END, clean_line, "section")
-                
-                # Check if this is a model/CV/metric name and add info button
-                if any(keyword in clean_line for keyword in model_keywords):
-                    text_widget.insert(tk.END, " ")
-                    self._insert_info_button(text_widget, "models", "📘 More about models")
-                elif any(keyword in clean_line for keyword in cv_keywords):
-                    text_widget.insert(tk.END, " ")
-                    self._insert_info_button(text_widget, "cross_validation", "📘 More about CV")
-                elif any(keyword in clean_line for keyword in metric_keywords):
-                    text_widget.insert(tk.END, " ")
-                    self._insert_info_button(text_widget, "metrics", "📘 More about metrics")
-                
+        """Render a help topic into ``text_widget``.
+
+        The structure comes from :func:`utils.help_assistant.parse_help_blocks`,
+        which is shared with the Qt front end.  Each block is given a tag whose
+        left margins are computed from the block's own indentation, so a wrapped
+        line continues under the text it belongs to instead of falling back to
+        column zero - and the ``**bold**`` / ```code``` markers are applied as
+        formatting rather than printed as literal characters.
+        """
+        for block in parse_help_blocks(content):
+            kind = block['kind']
+            if kind == 'blank':
                 text_widget.insert(tk.END, '\n')
-            elif line.strip().startswith('•') or line.strip().startswith('-'):
-                # Bullet points
-                text_widget.insert(tk.END, line + '\n', "bullet")
-            elif line.strip().startswith('✓'):
-                # Checkmark bullets
-                text_widget.insert(tk.END, line + '\n', "bullet")
+                continue
+            if kind == 'rule':
+                text_widget.insert(tk.END, '─' * 58 + '\n', "rule")
+                continue
+
+            plain = ''.join(t for t, _s in block['spans'])
+            if kind in ('title', 'section'):
+                text_widget.insert(tk.END, plain, kind)
+                for info_type, label, keywords in self._INFO_LINK_KEYWORDS:
+                    if any(k in plain for k in keywords):
+                        text_widget.insert(tk.END, "  ")
+                        self._insert_info_button(text_widget, info_type, label)
+                        break
+                text_widget.insert(tk.END, '\n')
+                continue
+
+            # Indent tag: one per (kind, indent) pair, created on demand.  For
+            # bullets and numbers the second margin sits past the marker, which
+            # is what gives the hanging indent.
+            # Paragraph tags set margins only, never a font: a Tk tag created
+            # later wins over an earlier one, so a font here would override the
+            # "strong"/"code" character tags layered on the same range.
+            base = 10 + 12 * (block['indent'] // 2)
+            if kind in ('bullet', 'numbered'):
+                marker = block['marker'] + ' '
+                tag = f"para_{kind}_{block['indent']}_{len(marker)}"
+                if tag not in text_widget.tag_names():
+                    text_widget.tag_configure(
+                        tag, spacing1=1,
+                        lmargin1=base, lmargin2=base + 9 * len(marker))
+                text_widget.insert(tk.END, marker, tag)
             else:
-                text_widget.insert(tk.END, line + '\n')
+                tag = f"para_body_{block['indent']}"
+                if tag not in text_widget.tag_names():
+                    text_widget.tag_configure(
+                        tag, spacing1=1, lmargin1=base, lmargin2=base)
+
+            for text, style in block['spans']:
+                tags = (tag, 'strong') if style == 'bold' else \
+                       ((tag, 'code') if style == 'code' else (tag,))
+                text_widget.insert(tk.END, text, tags)
+            text_widget.insert(tk.END, '\n')
     
     def _insert_info_button(self, text_widget, info_type, button_text):
         """Insert a clickable info button in the text widget"""
@@ -627,30 +723,30 @@ Average magnitude of prediction errors in original units.
         scrollbar.pack(side="right", fill="y")
         text_widget.config(yscrollcommand=scrollbar.set)
         
-        # Configure tags
-        text_widget.tag_configure("bold", font=('Arial', 10, 'bold'))
+        # Configure tags.  Bullets get a hanging indent so a wrapped line lines
+        # up under its text rather than under the bullet.
+        text_widget.tag_configure("bold", font=('Arial', 10, 'bold'),
+                                  foreground='#1a5490', spacing1=6)
+        text_widget.tag_configure("body", lmargin1=8, lmargin2=8)
+        text_widget.tag_configure("bullet", lmargin1=20, lmargin2=34)
         text_widget.tag_configure("url", foreground="blue", underline=True)
-        
-        # Insert formatted content
-        lines = info["content"].strip().split('\n')
-        for line in lines:
-            if line.strip().startswith('**') and line.strip().endswith('**'):
-                clean_line = line.replace('**', '')
-                text_widget.insert(tk.END, clean_line + '\n', "bold")
-            elif 'http' in line:
-                # Parse URLs
-                parts = line.split('http')
-                text_widget.insert(tk.END, parts[0])
-                for i, part in enumerate(parts[1:], 1):
-                    url_end = part.find(' ')
-                    if url_end == -1:
-                        url_end = len(part)
-                    url = 'http' + part[:url_end]
-                    text_widget.insert(tk.END, url, "url")
-                    text_widget.insert(tk.END, part[url_end:])
+
+        for block in parse_help_blocks(info["content"].strip()):
+            kind = block['kind']
+            if kind == 'blank':
                 text_widget.insert(tk.END, '\n')
-            else:
-                text_widget.insert(tk.END, line + '\n')
+                continue
+            if kind == 'rule':
+                text_widget.insert(tk.END, '─' * 54 + '\n', "body")
+                continue
+            para = ("bold" if kind in ('title', 'section')
+                    else ("bullet" if kind in ('bullet', 'numbered') else "body"))
+            if kind in ('bullet', 'numbered'):
+                text_widget.insert(tk.END, block['marker'] + ' ', para)
+            for text, style in block['spans']:
+                self._insert_with_links(text_widget, text, para,
+                                        bold=(style == 'bold'))
+            text_widget.insert(tk.END, '\n')
         
         # Make URLs clickable
         text_widget.tag_bind("url", "<Button-1>", lambda e: self._open_url_from_click(e, text_widget))
@@ -671,6 +767,22 @@ Average magnitude of prediction errors in original units.
         y = (info_dialog.winfo_screenheight() // 2) - (height // 2)
         info_dialog.geometry(f'{width}x{height}+{x}+{y}')
     
+    _URL_RE = re.compile(r'https?://\S+')
+
+    def _insert_with_links(self, text_widget, text, para_tag, bold=False):
+        """Insert ``text`` under ``para_tag``, tagging any URLs as clickable."""
+        tags = (para_tag, "bold") if bold else (para_tag,)
+        pos = 0
+        for m in self._URL_RE.finditer(text):
+            if m.start() > pos:
+                text_widget.insert(tk.END, text[pos:m.start()], tags)
+            # Trailing sentence punctuation is not part of the address.
+            url = m.group(0).rstrip('.,;:)')
+            text_widget.insert(tk.END, url, tags + ("url",))
+            pos = m.start() + len(url)
+        if pos < len(text):
+            text_widget.insert(tk.END, text[pos:], tags)
+
     def _open_url_from_click(self, event, text_widget):
         """Open URL when clicked in text widget"""
         try:

@@ -1,5 +1,5 @@
 """
-Compositional data log-ratio transforms — ALR, CLR, ILR.
+Compositional data log-ratio transforms - ALR, CLR, ILR.
 
 Soil texture (sand + silt + clay) is *compositional*: the parts carry only
 relative information and are constrained to a constant sum (100 %).  Modelling
@@ -8,16 +8,16 @@ predictions need not sum to 100 and the (singular) covariance structure is
 mis-specified.  The log-ratio transforms of Aitchison map a D-part composition
 from the simplex into ordinary real space, where standard regression is valid;
 predictions are mapped back with the inverse, which is closed to the total by
-construction — so sand + silt + clay always sums to 100 again.
+construction - so sand + silt + clay always sums to 100 again.
 
 Transforms provided (each with an exact inverse):
 
-* **CLR** – centred log-ratio: ``clr(x)_i = ln(x_i / g(x))`` with ``g`` the
+* **CLR** - centred log-ratio: ``clr(x)_i = ln(x_i / g(x))`` with ``g`` the
   geometric mean.  Yields ``D`` coordinates that sum to zero (a singular basis,
   fine as regression targets but not for methods needing full-rank covariance).
-* **ALR** – additive log-ratio: ``alr(x)_i = ln(x_i / x_ref)`` for the ``D-1``
+* **ALR** - additive log-ratio: ``alr(x)_i = ln(x_i / x_ref)`` for the ``D-1``
   non-reference parts.  Simple and interpretable; the geometry is oblique.
-* **ILR** – isometric log-ratio: an orthonormal rotation of the CLR onto ``D-1``
+* **ILR** - isometric log-ratio: an orthonormal rotation of the CLR onto ``D-1``
   coordinates (Helmert contrast basis).  Isometric (preserves distances/angles),
   the statistically preferred default.
 
@@ -46,7 +46,7 @@ def replace_zeros(x, delta=None):
     """Multiplicative zero replacement (Martín-Fernández et al., 2003).
 
     Works on proportions: each zero part is set to a small ``delta`` and the
-    non-zero parts are scaled down so the row still sums to 1 — preserving the
+    non-zero parts are scaled down so the row still sums to 1 - preserving the
     ratios between the observed parts.  ``delta`` defaults to 65 % of the
     smallest positive proportion in the data (a common rule of thumb)."""
     P = close(np.asarray(x, dtype=float))
@@ -141,7 +141,7 @@ def ilr_inv(Z, total=1.0):
 def forward(x, transform, ref=-1):
     """Forward log-ratio transform.  ``transform`` in :data:`TRANSFORMS`.
 
-    Returns ``(coords, n_coords)`` — ``D`` for CLR, ``D-1`` for ALR/ILR."""
+    Returns ``(coords, n_coords)`` - ``D`` for CLR, ``D-1`` for ALR/ILR."""
     t = str(transform).upper()
     if t == "CLR":
         return clr(x)

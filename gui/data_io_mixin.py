@@ -8,6 +8,66 @@ from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 class DataIOMixin:
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reading a data file
+    # ─────────────────────────────────────────────────────────────────────────
+    def _load_dataframe_with_progress(self, file_path):
+        """Read a CSV/Excel file into a DataFrame, driving the progress bar.
+
+        Uses the shared :func:`utils.data_converter.load_file`, which picks the
+        fastest reader available (python-calamine, else a streaming .xlsx reader
+        for plain grids, else pandas) and reports how far it has got.  A large
+        spreadsheet takes roughly half as long as a plain ``pd.read_excel`` and,
+        more usefully, now says so while it works.
+
+        The read runs on a worker thread, which must never touch Tk: it only
+        writes the latest ``(fraction, message)`` into ``latest``, and the poll
+        callback - which ``_run_offloaded`` invokes on the main thread - is what
+        moves the widgets.
+        """
+        # load_file only claims the extensions it knows; anything else keeps the
+        # previous behaviour of handing the file to pandas as a spreadsheet.
+        known = ('.csv',) + _data_converter._EXCEL_EXTS if _HAS_CONVERTER else ()
+        if not file_path.lower().endswith(known):
+            reader = (pd.read_csv if file_path.lower().endswith('.csv')
+                      else pd.read_excel)
+            return self._run_offloaded(reader, file_path)
+
+        latest = {'state': (None, 'Opening %s…'
+                            % os.path.basename(file_path)), 'shown': None}
+
+        def report(fraction, message):
+            """Worker thread - no Tk calls here."""
+            latest['state'] = (fraction, message)
+
+        def poll():
+            """Main thread - safe to touch widgets."""
+            state = latest['state']
+            if state is latest['shown']:
+                return
+            latest['shown'] = state
+            fraction, message = state
+            if fraction is None:
+                # No percentage available (a spreadsheet mid-parse): leave the
+                # bar where it is rather than jumping it back to zero.
+                self.progress_label.config(text=message or "Loading…")
+            else:
+                self.progress_var.set(max(0.0, min(1.0, fraction)) * 100.0)
+                self.progress_label.config(text=message or "Loading…")
+
+        self.progress_var.set(0)
+        self.progress_label.config(text="Loading…")
+        return self._run_offloaded(
+            _data_converter.load_file, file_path, progress=report, _on_poll=poll)
+
+    def _reset_load_progress(self):
+        """Put the progress bar back to its idle 0% state after a load."""
+        try:
+            self.progress_var.set(0)
+            self.progress_label.config(text="0%")
+        except Exception:  # noqa: BLE001 - cosmetic only
+            pass
+
     def load_excel(self):
         try:
             file_path = filedialog.askopenfilename(
@@ -17,14 +77,14 @@ class DataIOMixin:
                 # Reset GUI
                 self.reset_gui()
 
-                # Reading a large workbook can take seconds — offload it and pin the
+                # Reading a large workbook can take seconds - offload it and pin the
                 # window so the GUI stays responsive and does not auto-resize.
                 self.set_busy_state(True)
                 self._pin_geometry()
                 try:
-                    reader = pd.read_csv if file_path.endswith('.csv') else pd.read_excel
-                    self.df = self._run_offloaded(reader, file_path)
+                    self.df = self._load_dataframe_with_progress(file_path)
                 finally:
+                    self._reset_load_progress()
                     self._unpin_geometry()
                     self.set_busy_state(False)
 
@@ -89,6 +149,10 @@ class DataIOMixin:
                 
                 # Remove 'Names' if it appears in soil properties
                 self.soil_properties = [prop for prop in self.soil_properties if prop != 'Names']
+
+                # Data is loaded, so the distribution view has something to show.
+                if hasattr(self, 'distribution_btn'):
+                    self.distribution_btn.config(state='normal')
 
                 # Coerce the spectral (wavelength) columns to numeric so that
                 # blank cells / stray text become proper NaN and are handled by
@@ -257,7 +321,7 @@ class DataIOMixin:
                 wavelength_unit=self.wavelength_unit,
                 seed=getattr(self, '_spectra_seed', 42),
                 row_pool=row_pool,
-                title=f"Reflectance Spectra — {self.input_filename}\n{note}")
+                title=f"Reflectance Spectra - {self.input_filename}\n{note}")
             self._reflectance_spectra_fig = fig
             self.store_analysis_plot("Reflectance Spectra", "Dataset", fig,
                                      item_type="spectra")
@@ -272,7 +336,7 @@ class DataIOMixin:
                 messagebox.showwarning("Warning", "Please load an Excel file first")
                 return
             
-            # Wavelength column names are strings — compare numerically, not
+            # Wavelength column names are strings - compare numerically, not
             # lexicographically (otherwise "1000" < "999" gives a bogus range).
             if self.wavelengths:
                 _wl_floats = [float(w) for w in self.wavelengths]
@@ -352,7 +416,7 @@ class DataIOMixin:
     
     def save_model(self):
         try:
-            # Compositional (ALR/CLR/ILR) bundle — save the whole bundle as-is.
+            # Compositional (ALR/CLR/ILR) bundle - save the whole bundle as-is.
             if getattr(self, 'compositional_model', None) is not None:
                 b = self.compositional_model
                 safe_parts = "-".join(p.replace(' ', '') for p in b.get('parts', []))[:40]
@@ -385,7 +449,7 @@ class DataIOMixin:
             save_model_parameters = (dict(_mparams_override) if _mparams_override is not None
                                      else {name: var.get() for name, var in self.param_vars.items()})
 
-            # Generate default filename — reuse the timestamp of this run's
+            # Generate default filename - reuse the timestamp of this run's
             # results/PDF so the model file matches them.
             default_filename = generate_model_filename(
                 self.input_filename, self.selected_property, save_model_type,
@@ -474,7 +538,7 @@ class DataIOMixin:
                 # Load model and scalers
                 model_data = joblib.load(file_path)
 
-                # Compositional (ALR/CLR/ILR) bundle — different shape, handled
+                # Compositional (ALR/CLR/ILR) bundle - different shape, handled
                 # separately from single-property models.
                 if model_data.get('compositional'):
                     self._load_compositional_model(model_data, file_path)
@@ -603,7 +667,7 @@ class DataIOMixin:
                 filetypes=open_image_filetypes())
 
             if file_path:
-                # Reading a hyperspectral cube can be slow — offload it so the GUI
+                # Reading a spectral image cube can be slow - offload it so the GUI
                 # stays responsive, keeping all Tk access on the main thread.  The
                 # reader auto-detects the format and recovers per-band wavelengths
                 # / FWHM from the header (ENVI/.hdr etc.) when present.
@@ -634,7 +698,7 @@ class DataIOMixin:
                                 f"{'  + FWHM' if self.image_fwhms else ''}\n")
                 else:
                     self.status_text.insert(
-                        tk.END, "No wavelengths in header — will assume the model's "
+                        tk.END, "No wavelengths in header - will assume the model's "
                                 "band grid at prediction time.\n")
                 if image_info.get('gain_applied'):
                     g = image_info.get('gain') or []
@@ -642,7 +706,7 @@ class DataIOMixin:
                     self.status_text.insert(
                         tk.END, f"Radiometric gain/offset applied from header "
                                 f"(gain={g0}{'  (per-band)' if len(set(g)) > 1 else ''}) "
-                                f"— values are now in physical/reflectance units.\n")
+                                f"- values are now in physical/reflectance units.\n")
                 if image_info.get('nodata') is not None:
                     self.status_text.insert(
                         tk.END, f"No-data value {image_info['nodata']} converted to NaN.\n")
@@ -709,7 +773,7 @@ class DataIOMixin:
                 return
             
             # Resolve the image's per-band wavelengths.  Prefer the real values
-            # recovered from the image header — this lets the processor select the
+            # recovered from the image header - this lets the processor select the
             # overlapping bands and resample onto the model grid *correctly* even
             # when the ranges differ.  Only fall back to the training grid (or an
             # assumed-same-range interpolation) when the header carries none.
@@ -733,7 +797,7 @@ class DataIOMixin:
                     "Band Count Mismatch",
                     f"The image has {image_bands} bands, but the model was trained on "
                     f"{training_bands} bands (wavelengths {min_wl:.1f}–{max_wl:.1f} nm).\n\n"
-                    f"The image header carries no wavelengths, so Paracuda will assume its "
+                    f"The image header carries no wavelengths, so PARACUDA-NG will assume its "
                     f"bands are evenly spaced across the training range "
                     f"({min_wl:.1f}–{max_wl:.1f} nm) and resample them onto the model's grid "
                     f"using '{self.resample_method}'.\n\n"
@@ -747,7 +811,7 @@ class DataIOMixin:
 
             self.update_progress(0, "Processing image for prediction...")
 
-            # Use TRAINING preprocessing config (not current GUI state) — same as predict_unknown_csv
+            # Use TRAINING preprocessing config (not current GUI state) - same as predict_unknown_csv
             preprocess_kwargs = dict(self.model_preprocessing_kwargs)
 
             # ── Resampling: same confirm dialog as tabular prediction ─────────
@@ -760,10 +824,10 @@ class DataIOMixin:
                     # The image is already on the model's band grid (e.g. an EnMAP
                     # image predicted with an EnMAP-resampled model).  Re-applying
                     # resampling would resample the image onto essentially itself,
-                    # so skip it automatically — no need to prompt the user.
+                    # so skip it automatically - no need to prompt the user.
                     img_resample = False
                     self.status_text.insert(
-                        tk.END, f"  ↳ Resampling skipped — image already matches the "
+                        tk.END, f"  ↳ Resampling skipped - image already matches the "
                                 f"model's {len(self.new_wavelengths)}-band grid "
                                 f"(no resampling needed).\n")
                 elif self._confirm_apply_resampling("image"):
@@ -773,7 +837,7 @@ class DataIOMixin:
                 else:
                     img_resample = False
                     self.status_text.insert(
-                        tk.END, "  ↳ Resampling skipped (user choice) — assuming the "
+                        tk.END, "  ↳ Resampling skipped (user choice) - assuming the "
                                 "image already matches the model's band grid.\n")
             else:
                 self.status_text.insert(
@@ -794,12 +858,12 @@ class DataIOMixin:
             # Process image with same preprocessing as training.  self.image_data
             # is already in physical units with no-data converted to NaN by
             # read_geospatial_image, so no raw nodata value needs to be passed here.
-            # The validation cube costs a full-size array — only built if the user
+            # The validation cube costs a full-size array - only built if the user
             # asked to export it (large scenes otherwise run out of memory).
             img_wl = image_wavelengths if image_wavelengths is not None else self.wavelengths
 
             # Heavy, Tk-free work (resample + preprocess + model.predict over the
-            # whole scene) — offload to a worker thread and pin the window so the
+            # whole scene) - offload to a worker thread and pin the window so the
             # GUI stays responsive and does not shrink/auto-resize ("Not Responding").
             # The event loop keeps pumping during the offload, so disable the
             # Predict/View buttons to prevent a re-entrant second prediction.
@@ -809,7 +873,7 @@ class DataIOMixin:
             self.view_image_btn.config(state='disabled')
 
             # Predict per pixel-chunk INSIDE the image processor so the full
-            # (n_px, features) scaled matrix is never materialised — for a large
+            # (n_px, features) scaled matrix is never materialised - for a large
             # scene that matrix alone can be tens of GiB (e.g. 13.4M px × 1787
             # bands ≈ 89 GiB).  This closure maps a scaled block to final-unit
             # predictions (PCA → model.predict → inverse-transform).
@@ -851,7 +915,7 @@ class DataIOMixin:
 
             self.update_progress(80, "Saving results...")
             
-            # Save prediction — default to the SAME format/extension as the input
+            # Save prediction - default to the SAME format/extension as the input
             # image so the output header matches the source (ENVI→.hdr, .img, …).
             in_ext = os.path.splitext(getattr(self, 'image_path', '') or '')[1].lower() or ".tif"
             prop_name = self.selected_property if hasattr(self, 'selected_property') else "prediction"
@@ -908,7 +972,7 @@ class DataIOMixin:
                     fig = self._build_predicted_image_figure(self.predicted_image, property_name)
                     self.store_analysis_plot('Image Output', property_name, fig, item_type='image')
 
-                    # A prediction image now exists — enable the View button so the
+                    # A prediction image now exists - enable the View button so the
                     # user can return to it after navigating away.
                     self.view_image_btn.config(state='normal')
 
@@ -954,7 +1018,7 @@ class DataIOMixin:
         and refresh the Visualization tab live.
 
         This must NOT re-run the prediction or change the Predict/View button
-        states — only the displayed colormap updates.  A no-op when no prediction
+        states - only the displayed colormap updates.  A no-op when no prediction
         has been made yet.
         """
         if getattr(self, 'predicted_image', None) is None:
@@ -1067,9 +1131,9 @@ class DataIOMixin:
             self.set_busy_state(True)
             self._pin_geometry()
             try:
-                reader = pd.read_csv if file_path.lower().endswith('.csv') else pd.read_excel
-                df = self._run_offloaded(reader, file_path)
+                df = self._load_dataframe_with_progress(file_path)
             finally:
+                self._reset_load_progress()
                 self._unpin_geometry()
                 self.set_busy_state(False)
 
@@ -1090,7 +1154,7 @@ class DataIOMixin:
             else:
                 wl_col_names = list(raw_wl_cols)  # original column names (may be int or str)
 
-            # Store separately — do NOT touch self.df or any training state
+            # Store separately - do NOT touch self.df or any training state
             self.tabular_df = df
             self.tabular_wl_nm = wl_nm
             self.tabular_wl_cols = wl_col_names   # exact column names as they exist in df
@@ -1153,7 +1217,7 @@ class DataIOMixin:
             wl_col_names = list(self.tabular_wl_cols)
             file_path = self.tabular_file_path
 
-            # Build spectral matrix — use the stored column names (exact match in df)
+            # Build spectral matrix - use the stored column names (exact match in df)
             missing = [c for c in wl_col_names if c not in unknown_df.columns]
             if len(missing) == len(wl_col_names):
                 messagebox.showerror("Error",
@@ -1171,7 +1235,7 @@ class DataIOMixin:
             if len(wl_nm_new) != len(model_wl) or not np.allclose(
                     sorted(wl_nm_new), sorted(model_wl), atol=2.0):
                 # Interpolate onto the model grid, but only over the span the
-                # unknown data actually covers — safe_interpolate_spectra clips
+                # unknown data actually covers - safe_interpolate_spectra clips
                 # to that span internally, so we must track the SAME grid here to
                 # keep `current_wl` aligned 1:1 with the resulting columns.
                 model_wl_arr = np.asarray(model_wl, dtype=float)
@@ -1207,7 +1271,7 @@ class DataIOMixin:
 
                 wl_idx = [i for i, w in enumerate(current_wl) if _kept(w)]
                 X_unknown = X_unknown[:, wl_idx]
-                # Actual wavelengths of the kept columns — the true SOURCE grid to
+                # Actual wavelengths of the kept columns - the true SOURCE grid to
                 # resample FROM (guaranteed to match X_unknown's column count).
                 filt_wl = [current_wl[i] for i in wl_idx]
             else:
@@ -1216,11 +1280,11 @@ class DataIOMixin:
             export_wl = filt_wl
             if self.new_wavelengths is not None and len(self.new_wavelengths) > 0:
                 if self._image_matches_model_grid(filt_wl, self.new_wavelengths):
-                    # Data already on the model's grid — resampling is a no-op, skip
+                    # Data already on the model's grid - resampling is a no-op, skip
                     # it silently rather than prompting.
                     self.status_text.insert(
                         tk.END,
-                        f"  ↳ Resampling skipped — data already matches the model's "
+                        f"  ↳ Resampling skipped - data already matches the model's "
                         f"{len(self.new_wavelengths)}-band grid (no resampling needed).\n")
                 elif self._confirm_apply_resampling("unknown data"):
                     X_unknown = resample_spectra(X_unknown, filt_wl, self.new_wavelengths,
@@ -1234,16 +1298,16 @@ class DataIOMixin:
                 else:
                     self.status_text.insert(
                         tk.END,
-                        "  ↳ Resampling skipped (user choice) — assuming the "
+                        "  ↳ Resampling skipped (user choice) - assuming the "
                         "unknown data already matches the model's band grid.\n")
                 self.status_text.see(tk.END)
 
-            # Snapshot the spectra AFTER resampling but BEFORE preprocessing —
+            # Snapshot the spectra AFTER resampling but BEFORE preprocessing -
             # this is what "resampling validation" should show: the same grid
             # the model consumes, in its original (not derivative/transformed) units.
             X_resampled_for_export = X_unknown.copy()
 
-            # ── Preprocessing — use TRAINING config, not current GUI ──────────
+            # ── Preprocessing - use TRAINING config, not current GUI ──────────
             method = self.model_preprocessing
             pp_kwargs = dict(self.model_preprocessing_kwargs)
             self.status_text.insert(
@@ -1317,7 +1381,7 @@ class DataIOMixin:
                 self.status_text.see(tk.END)
 
                 # Optionally export the resampled spectra so the user can
-                # validate resampling — named after the INPUT file, beside
+                # validate resampling - named after the INPUT file, beside
                 # the chosen prediction output (same pattern as image export).
                 if (hasattr(self, 'export_resampled_tabular_var')
                         and self.export_resampled_tabular_var.get()):
@@ -1353,7 +1417,7 @@ class DataIOMixin:
             return "Missing data: none detected ✓"
         return (f"⚠ Missing data: {summary['total_missing']} empty/invalid cell(s) "
                 f"in {summary['rows_with_missing']}/{summary['n_rows']} row(s) "
-                f"— handled via 'Missing data' option before training")
+                f"- handled via 'Missing data' option before training")
 
     def _report_missing_data(self, summary):
         """Write missing-data findings to the status log, sidebar hint, and
@@ -1385,7 +1449,7 @@ class DataIOMixin:
         if hasattr(self, 'missing_data_label'):
             self.missing_data_label.config(
                 text=(f"⚠ {summary['total_missing']} missing cell(s) in "
-                      f"{summary['rows_with_missing']} row(s) — choose a strategy"),
+                      f"{summary['rows_with_missing']} row(s) - choose a strategy"),
                 foreground="#b06000")
 
         messagebox.showwarning(
@@ -1457,7 +1521,7 @@ class DataIOMixin:
             cache[cache_key] = keep
             return X[keep], y[keep]
         if n_removed:
-            # Would leave <2 samples — skip rather than break training.
+            # Would leave <2 samples - skip rather than break training.
             self.status_text.insert(
                 tk.END,
                 f"  ↳ Target outlier removal skipped: would leave too few "

@@ -1,10 +1,10 @@
 """
-Optuna-based hyperparameter tuning for the regression models used by Paracuda.
+Optuna-based hyperparameter tuning for the regression models used by PARACUDA-NG.
 
 The GUI first ranks models on their DEFAULT parameters; the user can then tune
 the selected / best model here.  Search spaces are adapted from the reference
 ``Ori_Code_TAU`` ModelFactory but keyed by the exact model names used in the
-Paracuda GUI, and every candidate model is built through the shared
+PARACUDA-NG GUI, and every candidate model is built through the shared
 ``model_training.create_model`` so there is a single source of truth for how a
 model is constructed.
 
@@ -119,6 +119,18 @@ def get_search_space(model_type, n_features, n_samples):
                 "reg_alpha": F(0.0, 1.0, step=0.1),
                 "reg_lambda": F(0.5, 2.0, step=0.1)}
 
+    if model_type == "Artificial Neural Network":
+        # Architectures are offered as whole strings rather than a neuron count
+        # per layer: the number of layers and their widths interact strongly, so
+        # sampling them independently mostly produces nonsense shapes.  These are
+        # ordered small -> large, which suits the modest sample counts typical of
+        # spectroscopy datasets.
+        return {"hidden_layer_sizes": C(["32", "64", "128",
+                                         "64, 32", "128, 64", "128, 64, 32"]),
+                "activation": C(["relu", "tanh"]),
+                "alpha": F(1e-6, 1e1, log=True),
+                "learning_rate_init": F(1e-4, 1e-2, log=True)}
+
     return {}
 
 
@@ -231,7 +243,7 @@ def search_space_table(model_type, n_features, n_samples):
     for name, dist in space.items():
         kind, rng, scale = _describe_distribution(dist)
         rows.append({'Hyperparameter': name, 'Type': kind,
-                     'Range': rng, 'Scale': scale or '—'})
+                     'Range': rng, 'Scale': scale or '-'})
     return rows
 
 

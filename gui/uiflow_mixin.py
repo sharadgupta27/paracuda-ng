@@ -18,15 +18,21 @@ class UIFlowMixin:
         else:
             self.after(0, lambda: callback(*args, **kwargs))
 
-    def _run_offloaded(self, fn, *args, **kwargs) -> Any:
+    def _run_offloaded(self, fn, *args, _on_poll=None, **kwargs) -> Any:
         """Run a heavy, Tk-free compute call on a worker thread while keeping the Tk
         event loop pumping, so the window never shows "(Not Responding)".
 
-        Tkinter is not thread-safe — only the main thread may touch Tk objects — so
+        Tkinter is not thread-safe - only the main thread may touch Tk objects - so
         the *orchestration* code (which reads Tk vars, prints status, opens dialogs)
         stays on the main thread; only the numeric work (model.fit, Optuna tuning,
         cross-validation, pandas reads) is offloaded here.  Any callback passed into
         ``fn`` that touches the GUI must marshal via ``_run_on_ui``.
+
+        ``_on_poll`` is an optional zero-argument callback invoked **on the main
+        thread** once per pump tick.  It is how a worker reports progress without
+        touching Tk itself: the worker writes into a plain container, and
+        ``_on_poll`` reads it and updates the widgets from the safe side.  The
+        name is underscored so it cannot collide with a keyword of ``fn``.
         """
         result = {}
         done = threading.Event()
@@ -45,6 +51,11 @@ class UIFlowMixin:
         # while the worker runs.  Run/Batch buttons are disabled via set_busy_state,
         # so re-entrancy from this update() is prevented.
         while not done.is_set():
+            if _on_poll is not None:
+                try:
+                    _on_poll()
+                except Exception:  # noqa: BLE001 - progress must never fail a load
+                    pass
             try:
                 self.update()
             except tk.TclError:

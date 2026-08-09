@@ -1,13 +1,13 @@
 """
-Script to analyze and optimize imports in spectral_analyzer.py
+Script to analyze and optimize imports in a PARACUDA-NG source file.
 This helps identify unused imports that can be removed to reduce executable size.
 
 @author: Sharad Kumar Gupta
 """
 
 import ast
-import sys
 from pathlib import Path
+from sys import argv
 
 def analyze_imports(file_path):
     """Analyze imports in the given Python file"""
@@ -46,12 +46,16 @@ def find_unused_imports(file_path):
     return unused
 
 def main():
-    file_path = Path("spectral_analyzer.py")
-    if not file_path.exists():
-        print("spectral_analyzer.py not found!")
+    if len(argv) < 2:
+        print("usage: python optimize_imports.py <file.py>")
+        print("example: python optimize_imports.py gui/app.py")
         return
-    
-    print("Analyzing imports in spectral_analyzer.py...")
+    file_path = Path(argv[1])
+    if not file_path.exists():
+        print(f"{file_path} not found!")
+        return
+
+    print(f"Analyzing imports in {file_path}...")
     imports = analyze_imports(file_path)
     
     print(f"\nFound {len(imports)} imports:")

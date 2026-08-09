@@ -3,7 +3,7 @@ Image processing utilities for spectral analysis.
 
 Reads/writes any GDAL-supported geospatial raster (GeoTIFF/TIFF, ENVI + .hdr,
 ERDAS Imagine .img, ESRI/generic .bil/.bip/.bsq/.dat with header, NITF, PCIDSK,
-…) — everything except ordinary JPEG/PNG snapshots.
+…) - everything except ordinary JPEG/PNG snapshots.
 Spectral metadata (per-band wavelength / FWHM) is recovered from the header when
 present, and predictions are written back in the *same* driver with a correct,
 spectral-free header derived from the input.
@@ -136,12 +136,12 @@ def _gain_offset_from_dataset(src):
     """Recover a per-band (gain, offset) to convert stored DN to physical units.
 
     Prefers GDAL's native per-band Scale/Offset (standard TIFF tags etc.), which
-    rasterio applies nowhere automatically — reading always returns the raw
+    rasterio applies nowhere automatically - reading always returns the raw
     stored numbers.  Falls back to ENVI's ``data gain values`` / ``data offset
     values`` header fields, which are NOT part of GDAL's ENVI metadata mapping
     (unlike ``wavelength``/``fwhm``) and so must be parsed by hand from the tag
     text.  Returns ``(None, None)`` when the dataset carries no scaling (gain 1,
-    offset 0 everywhere) — the overwhelmingly common case for GeoTIFF.
+    offset 0 everywhere) - the overwhelmingly common case for GeoTIFF.
     """
     try:
         scales, offsets = list(src.scales), list(src.offsets)
@@ -164,14 +164,14 @@ def _gain_offset_from_dataset(src):
 def read_geospatial_image(path):
     """Open any GDAL-supported raster and return PHYSICAL (not raw-DN) values.
 
-    Many hyperspectral/satellite products (e.g. ENVI L2A reflectance, scaled
+    Many multispectral/hyperspectral products (e.g. ENVI L2A reflectance, scaled
     GeoTIFF) store integer digital numbers with a header-defined gain/offset
     (e.g. ``data gain values = 0.0001`` so a raw DN of 3000 means reflectance
     0.3). Feeding raw DN straight into a model trained on 0-1 reflectance
     produces wildly out-of-range scaled features and garbage/negative
     predictions that then look like an empty (all-background) output. This
-    reader applies that gain/offset — from GDAL's native per-band Scale/Offset
-    or ENVI's custom header fields — so callers always get physical units. The
+    reader applies that gain/offset - from GDAL's native per-band Scale/Offset
+    or ENVI's custom header fields - so callers always get physical units. The
     header's no-data sentinel is also converted to NaN here (before scaling),
     so callers never need to special-case the raw sentinel value.
 
@@ -183,8 +183,9 @@ def read_geospatial_image(path):
     ext = os.path.splitext(path)[1].lower()
     if ext in _REJECT_EXTENSIONS:
         raise ValueError(
-            f"'{ext}' photos are not geospatial rasters. Load a hyperspectral "
-            f"cube (GeoTIFF, ENVI/.hdr, .img, .bil/.bip/.bsq, .dat, …).")
+            f"'{ext}' photos are not geospatial rasters. Load a multispectral "
+            f"or hyperspectral cube (GeoTIFF, ENVI/.hdr, .img, .bil/.bip/.bsq, "
+            f".dat, …).")
     with rasterio.open(path) as src:
         raw = src.read()
         profile = dict(src.profile)
@@ -192,7 +193,7 @@ def read_geospatial_image(path):
         wl, fwhm, units = _spectral_from_dataset(src)
         gain, offset = _gain_offset_from_dataset(src)
         nodata_raw = profile.get('nodata')
-        # ENVI band interleave (bil/bip/bsq) — rasterio's profile normalises this
+        # ENVI band interleave (bil/bip/bsq) - rasterio's profile normalises this
         # away, so read it from the ENVI tags to preserve it on write.
         try:
             interleave = src.tags(ns='ENVI').get('interleave')
@@ -225,8 +226,8 @@ def read_geospatial_image(path):
         fwhm = None
 
     # ── No-data → NaN (on the RAW sentinel, before any scaling) ───────────
-    # float32 keeps a full hyperspectral scene at half the footprint of float64
-    # (a 1195×1150×224 EnMAP cube is 1.2 GiB vs 2.4 GiB) — ample precision for
+    # float32 keeps a full image cube at half the footprint of float64
+    # (a 1195×1150×224 EnMAP cube is 1.2 GiB vs 2.4 GiB) - ample precision for
     # reflectance; the prediction pipeline upcasts per-chunk where needed.
     data = raw.astype('float32', copy=False)
     del raw
@@ -269,13 +270,13 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
 
     The source bands within the training range are always resampled onto the
     model's input grid (``new_wavelengths`` when the model was resampled, else
-    ``filtered_wavelengths`` — i.e. the training-Excel wavelengths), so an image
+    ``filtered_wavelengths`` - i.e. the training-Excel wavelengths), so an image
     on any band grid can be predicted.
 
     Memory: a full scene (e.g. EnMAP 1195×1150×224) is far too large to push
     through resample→preprocess→scale as one float64 matrix (each full-size
     copy is ~2 GiB and the old single-shot pipeline needed several at once).
-    The spectra are therefore processed in blocks of ``chunk_pixels`` pixels —
+    The spectra are therefore processed in blocks of ``chunk_pixels`` pixels -
     only the small per-chunk temporaries are float64; the persistent outputs
     are float32.
 
@@ -291,12 +292,12 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
         mask_background: also flag all-zero/near-zero and saturated pixels.
         saturation: pixels with |value| ≥ this on any band are background.
         return_cube: build the (pixels, bands) validation cube.  Costs one extra
-            full-size float32 array — pass False unless the user asked to
+            full-size float32 array - pass False unless the user asked to
             export the resampled cube.
         chunk_pixels: pixels per processing block.
         predict_fn: optional callable mapping a scaled ``(n_chunk, features)``
             block to a ``(n_chunk,)`` prediction vector (in the final output
-            units — the caller wraps PCA/​model.predict/​inverse-transform).
+            units - the caller wraps PCA/​model.predict/​inverse-transform).
             When given, predictions are computed *inside* the chunk loop and only
             a single ``(n_px,)`` float32 vector is kept, instead of the full
             ``(n_px, features)`` scaled matrix.  This is essential for large
@@ -312,7 +313,7 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
         matrix.  ``valid_mask`` is a per-pixel bool (flattened row-major) marking
         real pixels, and ``resampled_cube`` is the (pixels, target_bands)
         reflectance on the model grid (NaN at background pixels) for validation
-        — or ``None`` when ``return_cube`` is False.
+        - or ``None`` when ``return_cube`` is False.
     """
     try:
         if preprocess_kwargs is None:
@@ -336,8 +337,8 @@ def process_image_for_prediction(image_data, wavelengths, preprocessing_method,
         B, n_px = flat.shape
 
         # ── Identify background pixels and BAD BANDS (band-wise, memory-light) ─
-        # Real hyperspectral scenes carry (a) no-data/border pixels that are fill
-        # in *every* band, and (b) "bad bands" — whole bands that are fill/NaN in
+        # Real image scenes carry (a) no-data/border pixels that are fill
+        # in *every* band, and (b) "bad bands" - whole bands that are fill/NaN in
         # *every* real pixel (e.g. EnMAP's water-vapour gaps).  Requiring every
         # band finite would wrongly mark the entire scene background whenever one
         # bad band lies in range, so we treat these separately: a pixel is real
@@ -555,7 +556,7 @@ _ENVI_INTERLEAVE = {'bil': 'BIL', 'bip': 'BIP', 'bsq': 'BSQ',
 def _envi_georef(image_meta, src_image_path):
     """Return ``(map_info_list, coord_sys_string)`` for an ENVI output.
 
-    Prefers an *exact copy* of the input ENVI header — spectral resampling does
+    Prefers an *exact copy* of the input ENVI header - spectral resampling does
     not change the spatial grid, so the input ``map info`` /
     ``coordinate system string`` apply verbatim.  Falls back to reconstructing
     ``map info`` from the rasterio profile's crs/transform."""
@@ -598,14 +599,14 @@ def save_cube_image(cube, original_shape, wavelengths, fwhms, image_meta,
     can validate resampling.
 
     ENVI output is written with the **spectral** library (SPy), which produces a
-    correct, complete ``.hdr`` — wavelength, FWHM, band names, ``data ignore
+    correct, complete ``.hdr`` - wavelength, FWHM, band names, ``data ignore
     value``, the preserved band ``interleave`` (bil/bip/bsq) and the input's
     georeferencing (``map info`` / ``coordinate system string``).  Other drivers
     (GeoTIFF, …) are written via rasterio with wavelengths in band descriptions.
 
     Args:
         cube: (pixels, bands) reflectance (row-major pixels; NaN at background).
-        original_shape: source (bands, rows, cols) — only rows/cols are used.
+        original_shape: source (bands, rows, cols) - only rows/cols are used.
         wavelengths / fwhms: per-band centres and (optional) widths of ``cube``.
         interleave: source band interleave to reproduce (ENVI output only).
         src_image_path: input image path, used to copy its ENVI georeferencing.
@@ -651,7 +652,7 @@ def _save_cube_envi_spy(cube, rows, cols, n_bands, wl, fw, image_meta, file_path
     """Write a multi-band ENVI cube with a complete header via the SPy library."""
     import spectral.io.envi as envi
 
-    # (pixels, bands) → (rows, cols, bands) — SPy's native layout — NaN → nodata.
+    # (pixels, bands) → (rows, cols, bands) - SPy's native layout - NaN → nodata.
     img = cube.reshape(rows, cols, n_bands).astype('float32')
     img = np.where(np.isfinite(img), img, np.float32(nodata))
 

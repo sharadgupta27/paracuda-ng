@@ -1,9 +1,9 @@
 """
 data_converter.py
 =================
-Paracuda Data Converter -- three-tab Tkinter wizard that auto-detects the
+PARACUDA-NG Data Converter -- three-tab Tkinter wizard that auto-detects the
 layout of an arbitrary Excel / CSV spectral file and converts it to the
-Paracuda-compatible format:
+PARACUDA-NG-compatible format:
 
     Names | Prop1 | ... | PropN | WL1 | WL2 | ... | WLM
 
@@ -12,7 +12,7 @@ Supported input layouts
 1. Row-wise  -- samples in rows, wavelength values as column headers
    (e.g. Names | Sand | Silt | 425 | 480 | 545 | ...)
 2. Col-wise  -- samples in columns, wavelengths as first-column values
-   (transposed; common for hyperspectral instruments)
+   (transposed; common for spectral instruments)
    May contain soil-property rows BEFORE the wavelength rows:
    e.g.  Row_label | S1 | S2
          Sand      | 45 | 32
@@ -30,22 +30,31 @@ Wavelength units
 """
 
 import os
-import sys
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import queue
+import re
+import threading
+
+# Tkinter is only needed by the standalone ParacudaConverter GUI (below).  Import
+# it lazily so the pure detection/conversion functions can be imported in a
+# Tk-free environment such as the PARACUDA-NG QGIS plugin (which provides its own
+# Qt converter UI).
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox
+    _HAS_TK = True
+    _TkBase = tk.Tk
+except Exception:  # pragma: no cover - Tk-free (e.g. QGIS) environment
+    tk = ttk = filedialog = messagebox = None
+    _HAS_TK = False
+    _TkBase = object
 
 import numpy as np
 import pandas as pd
 
-# Make the repo root importable — this file is launched as its own process from
-# the utils/ folder, so the parent directory (where paracuda_theme.py lives) is
-# not automatically on sys.path.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+from utils.window_icon import apply_icon, set_app_user_model_id
 
 # Shared theme (optional): keeps the converter visually in sync with the main
-# Paracuda window and honours the user's Theme-menu choice.  If the module is
+# PARACUDA-NG window and honours the user's Theme-menu choice.  If the module is
 # unavailable (e.g. this file copied out on its own) we fall back to the
 # original hardcoded navy look further below.
 try:
@@ -287,7 +296,7 @@ def detect_property_columns(df, wl_cols, name_col):
 
 
 def is_already_paracuda(df):
-    """Return True if *df* already matches the Paracuda format."""
+    """Return True if *df* already matches the PARACUDA-NG format."""
     if len(df.columns) < 6:
         return False
     if str(df.columns[0]).lower().strip() != 'names':
@@ -305,7 +314,7 @@ def convert_to_paracuda(df, orientation, wl_cols, name_col,
                         wl_unit='auto'):
     # wl_unit: 'auto' | 'nm' | 'um'  (overrides heuristic when set)
     """
-    Convert *df* to Paracuda format.
+    Convert *df* to PARACUDA-NG format.
 
     Returns (out_df, warnings_list).
 
@@ -322,7 +331,7 @@ def convert_to_paracuda(df, orientation, wl_cols, name_col,
     warn = []
 
     if is_already_paracuda(df):
-        warn.append("File is already in Paracuda format -- no conversion needed.")
+        warn.append("File is already in PARACUDA-NG format -- no conversion needed.")
         return df, warn
 
     # =========================================================================
@@ -519,29 +528,407 @@ def convert_to_paracuda(df, orientation, wl_cols, name_col,
 # ---------------------------------------------------------------------------
 
 
-def load_file(path, sheet=None):
-    """Load an Excel or CSV file and return a DataFrame."""
+_EXCEL_EXTS = ('.xlsx', '.xls', '.xlsm', '.ods')
+
+
+def _fastest_excel_engine(ext):
+    """Return the fastest available pandas engine for ``ext``, or ``None``.
+
+    ``calamine`` (the Rust reader behind ``python-calamine``) parses a large
+    spreadsheet several times faster than openpyxl and is the difference
+    between a converter that hangs for a minute and one that does not.  It is
+    optional: when it is not installed pandas' default engine is used.
+    """
+    try:
+        import python_calamine  # noqa: F401
+    except Exception:
+        return None
+    # pandas exposes the engine from 2.2 onwards.
+    if ext in ('.xlsx', '.xlsm', '.xls', '.ods'):
+        return 'calamine'
+    return None
+
+
+# --- Streaming .xlsx reader -------------------------------------------------
+#
+# openpyxl (which pandas uses for .xlsx) builds a Python object per cell, and on
+# a spectral file - thousands of samples x hundreds of bands - that dominates
+# the load: a 45 MB workbook took ~59 s, of which ~49 s was openpyxl.  Pulling
+# the sheet XML straight through an incremental parser instead cuts that to
+# ~22 s and, more importantly, yields row by row so a progress bar can move.
+#
+# It is used only when the workbook is a plain grid.  Anything the reader is not
+# certain about - date-formatted cells above all, where returning the raw serial
+# number would silently corrupt a column - aborts back to pandas.
+
+_XL_NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+_INT_TEXT_RE = re.compile(r'^-?\d+$')
+# Built-in number formats that mean "date" or "time" (ECMA-376 §18.8.30).
+_BUILTIN_DATE_FMTS = set(range(14, 23)) | set(range(27, 37)) | \
+    set(range(45, 48)) | set(range(50, 59))
+
+
+class _NotAPlainGrid(Exception):
+    """Raised when the streaming reader must hand the file back to pandas."""
+
+
+def _col_index(ref):
+    """Column index from a cell reference such as ``"BC12"`` (0-based)."""
+    n = 0
+    for ch in ref:
+        if not ch.isalpha():
+            break
+        n = n * 26 + (ord(ch.upper()) - 64)
+    return n - 1
+
+
+def _xlsx_date_style_indices(zf):
+    """Style indices whose number format renders as a date or a time."""
+    from xml.etree.ElementTree import fromstring
+
+    try:
+        styles = fromstring(zf.read('xl/styles.xml'))
+    except Exception:
+        # No styles part at all - nothing can be date-formatted.
+        return set()
+    custom_dates = set()
+    for fmt in styles.iter(_XL_NS + 'numFmt'):
+        code = fmt.get('formatCode') or ''
+        # Strip quoted literals and colour/condition blocks before looking for
+        # date tokens, so "0.00\"m\"" is not mistaken for a month.
+        bare = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', '', code)
+        if re.search(r'[ymdhs]', bare, re.IGNORECASE):
+            try:
+                custom_dates.add(int(fmt.get('numFmtId')))
+            except (TypeError, ValueError):
+                pass
+    date_styles = set()
+    cell_xfs = styles.find(_XL_NS + 'cellXfs')
+    if cell_xfs is None:
+        return date_styles
+    for i, xf in enumerate(cell_xfs.findall(_XL_NS + 'xf')):
+        try:
+            fmt_id = int(xf.get('numFmtId', 0))
+        except (TypeError, ValueError):
+            continue
+        if fmt_id in _BUILTIN_DATE_FMTS or fmt_id in custom_dates:
+            date_styles.add(i)
+    return date_styles
+
+
+_REL_NS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+
+
+def _xlsx_sheet_part(zf, sheet):
+    """Zip path of the worksheet XML for ``sheet`` (name, index or None)."""
+    from xml.etree.ElementTree import fromstring
+
+    try:
+        book = fromstring(zf.read('xl/workbook.xml'))
+        rels = fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+    except Exception:
+        raise _NotAPlainGrid("workbook parts unreadable")
+
+    sheets = [(el.get('name'), el.get(_REL_NS + 'id'))
+              for el in book.iter(_XL_NS + 'sheet')]
+    if not sheets:
+        raise _NotAPlainGrid("workbook has no readable sheet list")
+    # Attribute order is not fixed in the format, so read each relationship as
+    # an element rather than pattern-matching the raw XML.
+    targets = {el.get('Id'): el.get('Target') for el in rels}
+
+    if sheet is None or sheet == '' or sheet == 0:
+        _name, rid = sheets[0]
+    elif isinstance(sheet, int):
+        if sheet >= len(sheets):
+            raise _NotAPlainGrid("sheet index out of range")
+        _name, rid = sheets[sheet]
+    else:
+        wanted = str(sheet)
+        for name, rid in sheets:
+            if name == wanted:
+                break
+        else:
+            raise _NotAPlainGrid("sheet %r not found" % sheet)
+    target = targets.get(rid)
+    if not target:
+        raise _NotAPlainGrid("worksheet relationship missing")
+    target = target.lstrip('/')
+    return target if target.startswith('xl/') else 'xl/' + target
+
+
+def _read_xlsx_fast(path, sheet=None, progress=None):
+    """Read one sheet of an .xlsx/.xlsm into a DataFrame, streaming.
+
+    Raises :class:`_NotAPlainGrid` whenever the caller should fall back to
+    pandas rather than trust this reader.
+    """
+    import zipfile
+    from xml.etree.ElementTree import iterparse
+
+    with zipfile.ZipFile(path) as zf:
+        names = set(zf.namelist())
+        if 'xl/workbook.xml' not in names:
+            raise _NotAPlainGrid("not an OOXML workbook")
+        part = _xlsx_sheet_part(zf, sheet)
+        if part not in names:
+            raise _NotAPlainGrid("worksheet part %s missing" % part)
+        date_styles = _xlsx_date_style_indices(zf)
+
+        shared = []
+        if 'xl/sharedStrings.xml' in names:
+            _report(progress, None, 'Reading text table…')
+            with zf.open('xl/sharedStrings.xml') as fh:
+                for _event, el in iterparse(fh, ('end',)):
+                    if el.tag == _XL_NS + 'si':
+                        shared.append(''.join(
+                            t.text or '' for t in el.iter(_XL_NS + 't')))
+                        el.clear()
+
+        # Row count from the sheet dimension, when the writer recorded one, so
+        # the progress bar can be determinate rather than a spinner.
+        total_rows = 0
+        rows = []
+        width = 0
+        with zf.open(part) as fh:
+            for _event, el in iterparse(fh, ('end',)):
+                tag = el.tag
+                if tag == _XL_NS + 'dimension':
+                    ref = (el.get('ref') or '').split(':')
+                    if len(ref) == 2:
+                        digits = ''.join(c for c in ref[1] if c.isdigit())
+                        total_rows = int(digits) if digits else 0
+                    el.clear()
+                    continue
+                if tag != _XL_NS + 'row':
+                    continue
+                values = []
+                for c in el:
+                    if c.tag != _XL_NS + 'c':
+                        continue
+                    # Honour the cell reference: a sparse row would otherwise
+                    # shift every later value one column left.
+                    ref = c.get('r')
+                    if ref:
+                        idx = _col_index(ref)
+                        if idx < 0:
+                            raise _NotAPlainGrid("unreadable cell reference")
+                        while len(values) < idx:
+                            values.append(np.nan)
+                    style = c.get('s')
+                    ctype = c.get('t')
+                    if style is not None and date_styles:
+                        try:
+                            if int(style) in date_styles:
+                                raise _NotAPlainGrid("date-formatted cells")
+                        except ValueError:
+                            pass
+                    if ctype == 'inlineStr':
+                        is_el = c.find(_XL_NS + 'is')
+                        values.append('' if is_el is None else ''.join(
+                            t.text or '' for t in is_el.iter(_XL_NS + 't')))
+                        continue
+                    v = c.find(_XL_NS + 'v')
+                    text = None if v is None else v.text
+                    if text is None:
+                        # NaN rather than None so a numeric column with a blank
+                        # cell still infers as float, exactly as pandas does.
+                        values.append(np.nan)
+                    elif ctype == 's':
+                        try:
+                            values.append(shared[int(text)])
+                        except (ValueError, IndexError):
+                            raise _NotAPlainGrid("bad shared-string index")
+                    elif ctype == 'b':
+                        values.append(text not in ('0', '', 'false'))
+                    elif ctype == 'e':
+                        values.append(np.nan)        # #N/A, #DIV/0! and friends
+                    elif ctype in (None, 'n'):
+                        try:
+                            # Whole numbers stay ints, so a column of counts
+                            # comes back as int64 and not float64.
+                            values.append(int(text)
+                                          if _INT_TEXT_RE.match(text)
+                                          else float(text))
+                        except ValueError:
+                            values.append(text)
+                    else:                             # 'str' (cached formula)
+                        values.append(text)
+                el.clear()
+                rows.append(values)
+                width = max(width, len(values))
+                if len(rows) % 250 == 0:
+                    frac = (min(0.97, len(rows) / float(total_rows))
+                            if total_rows else None)
+                    _report(progress, frac,
+                            'Reading spreadsheet… %s rows' % f'{len(rows):,}')
+
+    if not rows:
+        raise _NotAPlainGrid("sheet is empty")
+    _report(progress, 0.99, 'Assembling table…')
+    for r in rows:
+        if len(r) < width:
+            r.extend([None] * (width - len(r)))
+    return _frame_from_cells(rows)
+
+
+def _frame_from_cells(rows):
+    """Turn raw cell rows into a DataFrame exactly as ``pd.read_excel`` would.
+
+    ``TextParser`` is the same type-inference pass pandas runs over the cells
+    its own Excel readers hand back, so using it here is what makes the fast
+    path invisible: column names, dtypes and "Unnamed: N" placeholders all come
+    out identical to a plain ``pd.read_excel``.  If it is ever unavailable the
+    caller falls back to pandas anyway.
+    """
+    from pandas.io.parsers import TextParser
+
+    # A blank header cell must reach TextParser as an empty string, which is
+    # what it turns into "Unnamed: N"; leaving it as NaN produced a NaN column
+    # name instead.
+    rows[0] = ['' if v is None or v != v else v for v in rows[0]]
+    parser = TextParser(rows, header=0, index_col=None)
+    try:
+        return parser.read()
+    finally:
+        try:
+            parser.close()
+        except Exception:
+            pass
+
+
+def _report(progress, fraction, message):
+    """Call an optional ``progress(fraction, message)`` callback, ignoring errors.
+
+    ``fraction`` is 0.0-1.0, or ``None`` when the reader cannot say how far it
+    has got (an indeterminate bar).  A failing callback must never take the
+    load down with it.
+    """
+    if progress is None:
+        return
+    try:
+        progress(fraction, message)
+    except Exception:
+        pass
+
+
+def _read_csv_with_progress(path, encoding, progress):
+    """Read a CSV in chunks, reporting progress from the file offset.
+
+    pandas cannot report progress, but the position of the underlying file
+    handle can: reading in chunks and watching ``tell()`` against the file size
+    gives a true percentage rather than a guess.  For small files the whole
+    thing is read in one go, since the chunking overhead is not worth it.
+    """
+    size = os.path.getsize(path)
+    # Below ~8 MB a plain read is quick enough that chunking only adds cost.
+    if size < 8 * 1024 * 1024:
+        _report(progress, None, 'Reading CSV…')
+        return pd.read_csv(path, encoding=encoding, header=0)
+
+    # Size each chunk by width, not by a fixed row count: a spectral file with
+    # 600 band columns puts 50,000 rows well over a gigabyte, and would report
+    # progress once at the very end.
+    try:
+        n_cols = max(1, len(pd.read_csv(path, encoding=encoding, nrows=0).columns))
+    except Exception:
+        n_cols = 32
+    chunk_rows = int(max(500, min(50000, 400000 / n_cols)))
+
+    chunks = []
+    with open(path, 'r', encoding=encoding, newline='') as fh:
+        reader = pd.read_csv(fh, header=0, chunksize=chunk_rows)
+        rows = 0
+        for chunk in reader:
+            chunks.append(chunk)
+            rows += len(chunk)
+            done = min(0.98, fh.tell() / float(size or 1))
+            _report(progress, done, 'Reading CSV… %s rows' % f'{rows:,}')
+    _report(progress, 0.99, 'Assembling table…')
+    if not chunks:
+        return pd.read_csv(path, encoding=encoding, header=0, nrows=0)
+    if len(chunks) == 1:
+        return chunks[0]
+    return pd.concat(chunks, ignore_index=True)
+
+
+def load_file(path, sheet=None, progress=None):
+    """Load an Excel or CSV file and return a DataFrame.
+
+    ``progress`` is an optional ``callable(fraction, message)`` used to drive a
+    progress bar; ``fraction`` is ``None`` while the reader cannot say how far
+    it has got.  Callers that do not want progress can leave it out - the
+    signature is otherwise unchanged.
+    """
     ext = os.path.splitext(path)[1].lower()
-    if ext in ('.xlsx', '.xls', '.xlsm', '.ods'):
-        return pd.read_excel(path, sheet_name=sheet if sheet is not None else 0, header=0)
+    if ext in _EXCEL_EXTS:
+        kwargs = {'sheet_name': sheet if sheet is not None else 0, 'header': 0}
+
+        # 1. python-calamine, when it is installed: the fastest reader by far.
+        engine = _fastest_excel_engine(ext)
+        if engine:
+            _report(progress, None, 'Reading spreadsheet (fast reader)…')
+            try:
+                return pd.read_excel(path, engine=engine, **kwargs)
+            except Exception:
+                pass  # Older pandas, or a file calamine cannot handle.
+
+        # 2. The built-in streaming reader for plain .xlsx/.xlsm grids: about
+        #    2.5x faster than openpyxl, and it can report real progress.
+        if ext in ('.xlsx', '.xlsm'):
+            try:
+                return _read_xlsx_fast(path, sheet=sheet, progress=progress)
+            except _NotAPlainGrid:
+                pass  # Dates, an odd layout - pandas handles it properly.
+            except Exception:
+                pass  # Never let the fast path break a load pandas could do.
+
+        # 3. pandas' own reader.
+        _report(progress, None, 'Reading spreadsheet…')
+        return pd.read_excel(path, **kwargs)
     if ext == '.csv':
         try:
-            return pd.read_csv(path, encoding='utf-8', header=0)
+            return _read_csv_with_progress(path, 'utf-8', progress)
         except UnicodeDecodeError:
-            return pd.read_csv(path, encoding='cp1252', header=0)
+            return _read_csv_with_progress(path, 'cp1252', progress)
     raise ValueError("Unsupported file type: %s" % ext)
 
 
 def get_sheet_names(path):
-    """Return list of sheet names (Excel) or ['Sheet1'] for CSV."""
+    """Return list of sheet names (Excel) or ``['Sheet1']`` for CSV.
+
+    For the zip-based formats the names live in a single small XML part, so
+    they are read straight out of the archive.  Opening the whole workbook just
+    to list its sheets made merely *picking* a large file feel like a hang.
+    """
     ext = os.path.splitext(path)[1].lower()
-    if ext in ('.xlsx', '.xls', '.xlsm', '.ods'):
-        return pd.ExcelFile(path).sheet_names
-    return ['Sheet1']
+    if ext not in _EXCEL_EXTS:
+        return ['Sheet1']
+    if ext in ('.xlsx', '.xlsm'):
+        try:
+            import zipfile
+            with zipfile.ZipFile(path) as zf:
+                book = zf.read('xl/workbook.xml').decode('utf-8', 'replace')
+            names = re.findall(r'<sheet[^>]*\bname="([^"]*)"', book)
+            if names:
+                # Undo the XML entity escaping in sheet names.
+                return [n.replace('&amp;', '&').replace('&lt;', '<')
+                         .replace('&gt;', '>').replace('&quot;', '"')
+                         .replace('&apos;', "'") for n in names]
+        except Exception:
+            pass  # Not a readable zip - fall back to pandas.
+    xl = pd.ExcelFile(path)
+    try:
+        return list(xl.sheet_names)
+    finally:
+        try:
+            xl.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
-# GUI – style constants  (used throughout the whole application)
+# GUI - style constants  (used throughout the whole application)
 # ---------------------------------------------------------------------------
 
 _FONT   = 'Segoe UI'          # single font family for all widgets
@@ -551,7 +938,7 @@ _FH     = (_FONT, 11, 'bold')  # section heading
 _FT     = (_FONT, 14, 'bold')  # window title
 _FS     = (_FONT, 9)           # small / caption
 
-# Colour palette — sourced from the shared theme (honours the user's Theme
+# Colour palette - sourced from the shared theme (honours the user's Theme
 # choice) with a fall-back to the original hardcoded navy values so this file
 # still runs stand-alone if paracuda_theme.py is missing.
 if _HAS_THEME:
@@ -597,12 +984,138 @@ else:
 # ---------------------------------------------------------------------------
 
 
-class ParacudaConverter(tk.Tk):
-    """Three-tab Tkinter wizard for converting spectral data to Paracuda format."""
+class _LoadProgress:
+    """Modal progress window shown while a file is read on a worker thread.
+
+    Reading a large spreadsheet used to run on the Tk main loop, so the window
+    stopped repainting and Windows marked it "Not Responding" with nothing to
+    tell the user whether anything was still happening.  The read now happens
+    off the main thread and reports back through this window, which switches
+    between a determinate bar (CSV, where the file offset gives a true
+    percentage) and an indeterminate one (spreadsheets, where it does not).
+
+    The worker never touches Tk.  It posts onto a plain ``queue.Queue`` that the
+    main thread drains on a timer: calling into Tcl from a second thread - even
+    via ``after`` - can block against the interpreter lock the main thread holds
+    inside ``update()``, which hangs the very load this window is reporting on.
+    """
+
+    POLL_MS = 80
+
+    def __init__(self, parent, title='Loading data'):
+        self._parent = parent
+        self._queue = queue.Queue()
+        self._on_done = None
+        self._pump_id = None
+        self._win = tk.Toplevel(parent)
+        self._win.title(title)
+        self._win.resizable(False, False)
+        self._win.configure(background=_C_WIN)
+        try:
+            self._win.transient(parent)
+            self._win.grab_set()
+        except Exception:
+            pass
+        # No close button: the load owns the window's lifetime.
+        self._win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        frm = ttk.Frame(self._win, padding=(20, 16, 20, 16))
+        frm.pack(fill='both', expand=True)
+        self._msg = tk.StringVar(value='Preparing…')
+        ttk.Label(frm, textvariable=self._msg, width=44).pack(anchor='w')
+        self._bar = ttk.Progressbar(frm, mode='indeterminate', length=340)
+        self._bar.pack(fill='x', pady=(8, 0))
+        self._bar.start(12)
+        self._indeterminate = True
+
+        self._win.update_idletasks()
+        try:
+            x = parent.winfo_rootx() + (parent.winfo_width() - self._win.winfo_width()) // 2
+            y = parent.winfo_rooty() + (parent.winfo_height() - self._win.winfo_height()) // 3
+            self._win.geometry('+%d+%d' % (max(0, x), max(0, y)))
+        except Exception:
+            pass
+
+    def update(self, fraction, message):
+        """Progress update, safe to call from the worker thread (no Tk here)."""
+        self._queue.put(('progress', fraction, message))
+
+    def finish(self, result):
+        """Signal completion from the worker thread; ``result`` reaches on_done."""
+        self._queue.put(('done', result, None))
+
+    def pump(self, on_done):
+        """Start draining the queue on the main thread; call once, from it."""
+        self._on_done = on_done
+        self._pump()
+
+    def _pump(self):
+        self._pump_id = None
+        done = None
+        try:
+            while True:
+                kind, a, b = self._queue.get_nowait()
+                if kind == 'done':
+                    done = (a,)
+                else:
+                    self._apply(a, b)
+        except queue.Empty:
+            pass
+        if done is not None:
+            self.close()
+            if self._on_done is not None:
+                self._on_done(done[0])
+            return
+        try:
+            self._pump_id = self._parent.after(self.POLL_MS, self._pump)
+        except Exception:
+            pass
+
+    def _apply(self, fraction, message):
+        if not self._win.winfo_exists():
+            return
+        if message:
+            self._msg.set(message)
+        if fraction is None:
+            if not self._indeterminate:
+                self._bar.stop()
+                self._bar.configure(mode='indeterminate')
+                self._bar.start(12)
+                self._indeterminate = True
+        else:
+            if self._indeterminate:
+                self._bar.stop()
+                self._bar.configure(mode='determinate', maximum=100.0)
+                self._indeterminate = False
+            self._bar['value'] = max(0.0, min(100.0, fraction * 100.0))
+
+    def close(self):
+        if self._pump_id is not None:
+            try:
+                self._parent.after_cancel(self._pump_id)
+            except Exception:
+                pass
+            self._pump_id = None
+        try:
+            self._bar.stop()
+            self._win.grab_release()
+        except Exception:
+            pass
+        try:
+            self._win.destroy()
+        except Exception:
+            pass
+
+
+class ParacudaConverter(_TkBase):
+    """Three-tab Tkinter wizard for converting spectral data to PARACUDA-NG format."""
 
     def __init__(self):
+        # Before the window exists, so the taskbar uses our icon (see
+        # utils/window_icon.py) rather than the interpreter's.
+        set_app_user_model_id()
         super().__init__()
-        self.title("Paracuda Data Converter")
+        self.title("PARACUDA-NG Data Converter")
         self.geometry("1040x760")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -627,7 +1140,7 @@ class ParacudaConverter(tk.Tk):
         self._out_path    = tk.StringVar()
         self._out_fmt     = tk.StringVar(value='xlsx')
         self._merge_mode  = tk.BooleanVar(value=False)
-        self._status_var  = tk.StringVar(value='Ready — open a spectral file to begin.')
+        self._status_var  = tk.StringVar(value='Ready - open a spectral file to begin.')
 
         self._wl_cols_detected   = []
         self._name_col_detected  = None
@@ -637,20 +1150,12 @@ class ParacudaConverter(tk.Tk):
 
     # ------------------------------------------------------------------
     def _set_icon(self):
-        try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            for name in ('paracuda.ico', 'icon.ico'):
-                p = os.path.join(script_dir, name)
-                if os.path.exists(p):
-                    self.iconbitmap(p)
-                    break
-        except Exception:
-            pass
+        apply_icon(self)
 
     # ------------------------------------------------------------------
     def _apply_styles(self):
         # Prefer the shared theme routine so the converter matches the main
-        # Paracuda window and the user's Theme-menu choice.
+        # PARACUDA-NG window and the user's Theme-menu choice.
         if _HAS_THEME and _PAL is not None:
             _shared_apply_theme(self, _PAL)
             self.option_add('*background', _C_WIN)
@@ -677,7 +1182,7 @@ class ParacudaConverter(tk.Tk):
         st.configure('Stat.TLabel',   background=_C_THDR, font=_FS,
                      foreground=_C_INF, padding=(6, 2))
 
-        # TButton – consistent font everywhere
+        # TButton - consistent font everywhere
         st.configure('TButton',       font=_FN, padding=(10, 5))
 
         st.configure('Primary.TButton', font=_FB, padding=(18, 9),
@@ -792,11 +1297,11 @@ class ParacudaConverter(tk.Tk):
         # title + subtitle
         tf = tk.Frame(hf, background=_C_BNR)
         tf.grid(row=0, column=1, padx=(18, 0), sticky='w')
-        tk.Label(tf, text='Paracuda  Data Converter',
+        tk.Label(tf, text='PARACUDA-NG  Data Converter',
                  font=(_FONT, 15, 'bold'),
                  background=_C_BNR, foreground='#FFFFFF').pack(anchor='w',
                                                                pady=(10, 0))
-        tk.Label(tf, text='Convert spectral / soil data files to Paracuda format',
+        tk.Label(tf, text='Convert spectral / soil data files to PARACUDA-NG format',
                  font=_FS, background=_C_BNR,
                  foreground='#93B4D8').pack(anchor='w')
 
@@ -972,12 +1477,20 @@ class ParacudaConverter(tk.Tk):
         # ---- Load button + stats badges ----
         lr = tk.Frame(f, background=_C_WIN)
         lr.grid(row=2, column=0, sticky='ew', pady=(0, 8))
-        lr.columnconfigure(1, weight=1)
+        lr.columnconfigure(2, weight=1)
         ttk.Button(lr, text='Load & Preview', style='Action.TButton',
                    command=self._load_and_preview).grid(
             row=0, column=0, sticky='w')
+        # Inspecting the distribution here can save the whole conversion: a
+        # property that is badly skewed or near-constant is not worth carrying
+        # forward, and the user finds that out before doing any more work.
+        self._dist_btn = ttk.Button(lr, text='Show Data Distribution',
+                                    style='Action.TButton',
+                                    command=self._show_distribution,
+                                    state='disabled')
+        self._dist_btn.grid(row=0, column=1, sticky='w', padx=(8, 0))
         self._load_stats_row = tk.Frame(lr, background=_C_WIN)
-        self._load_stats_row.grid(row=0, column=1, padx=(14, 0), sticky='w')
+        self._load_stats_row.grid(row=0, column=2, padx=(14, 0), sticky='w')
 
         # ---- Preview card ----
         cp = ttk.LabelFrame(f, text=' Data Preview (first 8 rows) ', padding=4)
@@ -1190,40 +1703,260 @@ class ParacudaConverter(tk.Tk):
             self._merge_inner.grid_remove()
 
     def _load_and_preview(self):
+        """Read the selected file(s) on a worker thread behind a progress bar.
+
+        A large spreadsheet used to be read on the Tk main loop, which froze the
+        window with no indication that anything was happening.
+        """
         path = self._path.get().strip()
         if not path:
             messagebox.showwarning("No file", "Please select a file first.")
             return
         self._set_status('Loading file…')
+
+        sheet = self._sheet.get() or 0
+        merge_path = (self._path2.get().strip()
+                      if self._merge_mode.get() else '')
+        sheet2 = self._sheet2.get() or 0
+
+        prog = _LoadProgress(self, 'Loading %s' % os.path.basename(path))
+
+        def work():
+            """Worker thread: no Tk calls, only queue posts through ``prog``."""
+            result = {}
+            try:
+                prog.update(None, 'Opening %s…' % os.path.basename(path))
+                result['df'] = load_file(path, sheet=sheet, progress=prog.update)
+                if merge_path:
+                    try:
+                        prog.update(None, 'Reading properties file…')
+                        result['df2'] = load_file(merge_path, sheet=sheet2,
+                                                  progress=prog.update)
+                    except Exception as exc:
+                        result['merge_error'] = str(exc)
+            except Exception as exc:
+                result['error'] = str(exc)
+            prog.finish(result)
+
+        def finish(result):
+            if 'error' in result:
+                messagebox.showerror("Load error", result['error'])
+                self._set_status('Load failed.')
+                return
+            self._df = result['df']
+            self._df2 = result.get('df2')
+            if 'merge_error' in result:
+                messagebox.showwarning("Merge file warning", result['merge_error'])
+
+            self._populate_treeview(self._prev_tv, self._df.head(8))
+
+            # show stats badges
+            r, c = self._df.shape
+            wl_q = len(detect_wavelength_columns(self._df))
+            self._refresh_badges(self._load_stats_row,
+                                 [('Rows', r), ('Columns', c),
+                                  ('Spectral bands detected', wl_q)])
+
+            self._run_autodetect()
+            if hasattr(self, '_dist_btn'):
+                self._dist_btn.config(state='normal')
+            self._set_status(
+                'Loaded: %s  (%d rows × %d columns)' % (
+                    os.path.basename(path), r, c))
+
+        threading.Thread(target=work, daemon=True).start()
+        prog.pump(finish)
+
+    def _show_distribution(self):
+        """Inspect the property distributions of the loaded (pre-conversion) file.
+
+        Shown before conversion on purpose: if a property is strongly skewed,
+        near-constant or mostly missing, converting and then training is wasted
+        effort, and the user can go back to the source data instead.
+        """
+        if self._df is None:
+            messagebox.showwarning("No data", "Load a file first.")
+            return
         try:
-            sheet = self._sheet.get() or 0
-            self._df = load_file(path, sheet=sheet)
-        except Exception as exc:
-            messagebox.showerror("Load error", str(exc))
-            self._set_status('Load failed.')
+            from utils.data_distribution import (create_distribution_figure,
+                                                 create_property_figure,
+                                                 summarize_distribution,
+                                                 distribution_report_text,
+                                                 property_report_text,
+                                                 suggest_numeric_columns)
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as exc:  # pragma: no cover - missing optional deps
+            messagebox.showerror(
+                "Not available",
+                f"The distribution view needs matplotlib and scipy:\n{exc}")
             return
 
-        if self._merge_mode.get() and self._path2.get().strip():
+        df = self._df
+        # In a col-wise (transposed) file the *rows* are the variables, so the
+        # per-column view would be meaningless; summarise the transpose instead.
+        wl_cols = [str(c) for c in detect_wavelength_columns(df)]
+        orientation = None
+        try:
+            orientation = detect_orientation(df)[0]
+        except Exception:
+            pass
+        if orientation == 'col-wise':
             try:
-                sheet2 = self._sheet2.get() or 0
-                self._df2 = load_file(self._path2.get().strip(), sheet=sheet2)
-            except Exception as exc:
-                messagebox.showwarning("Merge file warning", str(exc))
-                self._df2 = None
+                idx = df.columns[0]
+                is_wl_row = df[idx].apply(_is_wavelength_value)
+                props = df[~is_wl_row].set_index(idx).T
+                props = props.apply(pd.to_numeric, errors='coerce')
+                df, wl_cols = props, []
+            except Exception:
+                pass
 
-        self._populate_treeview(self._prev_tv, self._df.head(8))
+        columns = suggest_numeric_columns(df, wl_cols)
+        if not columns:
+            messagebox.showinfo(
+                "Data Distribution",
+                "No numeric property columns were found.\n\n"
+                "Spectral (wavelength) columns are excluded on purpose - this "
+                "view is about the properties you want to model.")
+            return
 
-        # show stats badges
-        r, c = self._df.shape
-        wl_q  = len(detect_wavelength_columns(self._df))
-        self._refresh_badges(self._load_stats_row,
-                             [('Rows', r), ('Columns', c),
-                              ('Spectral bands detected', wl_q)])
+        win = tk.Toplevel(self)
+        win.title("Data Distribution - before conversion")
+        win.geometry("1060x780")
+        try:
+            win.transient(self)
+        except Exception:
+            pass
 
-        self._run_autodetect()
-        self._set_status(
-            'Loaded: %s  (%d rows × %d columns)' % (
-                os.path.basename(path), r, c))
+        tk.Label(win, text='Property distributions in the loaded file',
+                 font=(_FONT, 13, 'bold'), background=_C_WIN,
+                 foreground=_C_BNR).pack(anchor='w', padx=12, pady=(10, 0))
+        tk.Label(win,
+                 text=('Check these before converting. Strong skew, almost no '
+                       'spread, or many missing values are data problems that no '
+                       'amount of preprocessing or model tuning will fix.'),
+                 font=(_FONT, 9, 'italic'), background=_C_WIN,
+                 foreground='#666666', wraplength=1010,
+                 justify='left').pack(anchor='w', padx=12, pady=(2, 8))
+        win.configure(background=_C_WIN)
+
+        palette = None
+        if _HAS_THEME:
+            try:
+                palette = get_palette(load_theme_name())
+            except Exception:
+                palette = None
+
+        # Statistics for every property up front (cheap), but one plot at a
+        # time - a grid of every property at once is unreadable.
+        summaries = summarize_distribution(df, columns, wl_cols)
+        marks = {'ok': '✓', 'warn': '!', 'problem': '!!'}
+        choice_to_col, choices = {}, []
+        for s in summaries:
+            label = ('%s %s' % (marks.get(s['severity'], ''), s['column'])).strip()
+            choice_to_col[label] = s['column']
+            choices.append(label)
+
+        picker = tk.Frame(win, background=_C_WIN)
+        picker.pack(fill='x', padx=12, pady=(0, 4))
+        tk.Label(picker, text='Property:', font=_FB, background=_C_WIN,
+                 foreground=_C_BNR).pack(side='left')
+        prop_var = tk.StringVar(value=choices[0] if choices else '')
+        prop_cb = ttk.Combobox(picker, textvariable=prop_var, values=choices,
+                               state='readonly', width=32)
+        prop_cb.pack(side='left', padx=(6, 12))
+        counts = {k: sum(1 for s in summaries if s['severity'] == k)
+                  for k in ('ok', 'warn', 'problem')}
+        tk.Label(picker,
+                 text=('%d properties  -  %d ok, %d to check, %d problem'
+                       % (len(summaries), counts['ok'], counts['warn'],
+                          counts['problem'])),
+                 font=_FS, background=_C_WIN,
+                 foreground=_C_MUT).pack(side='left')
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+        plot_tab = ttk.Frame(nb, padding=4)
+        text_tab = ttk.Frame(nb, padding=4)
+        nb.add(plot_tab, text='  Plots  ')
+        nb.add(text_tab, text='  Statistics & Findings  ')
+
+        plot_holder = ttk.Frame(plot_tab)
+        plot_holder.pack(fill='both', expand=True)
+
+        txt = tk.Text(text_tab, wrap='word', font=('Consolas', 9))
+        sb = ttk.Scrollbar(text_tab, orient='vertical', command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side='right', fill='y')
+        txt.pack(side='left', fill='both', expand=True)
+
+        verdict_lbl = tk.Label(win, text='', font=(_FONT, 10, 'bold'),
+                               background=_C_WIN)
+        verdict_lbl.pack(anchor='w', padx=12)
+
+        verdicts = {
+            'ok': ('%s looks usable - go ahead and convert.', '#1a9850'),
+            'warn': ('%s needs a look before you rely on a model.', '#b8860b'),
+            'problem': ('%s has a serious distribution problem - consider '
+                        'fixing the source data first.', '#d73027'),
+        }
+        state = {'fig': None, 'column': None}
+
+        def _show(*_args):
+            column = choice_to_col.get(prop_var.get())
+            if column is None or column == state['column']:
+                return
+            state['column'] = column
+            for child in plot_holder.winfo_children():
+                child.destroy()
+            fig, summary = create_property_figure(
+                df, column, wavelength_cols=wl_cols, palette=palette)
+            state['fig'] = fig
+            canvas = FigureCanvasTkAgg(fig, plot_holder)
+            canvas.get_tk_widget().pack(fill='both', expand=True)
+            canvas.draw()
+
+            txt.configure(state='normal')
+            txt.delete('1.0', 'end')
+            txt.insert('1.0', property_report_text(summary))
+            txt.configure(state='disabled')
+
+            text, colour = verdicts[summary['severity']]
+            verdict_lbl.config(text=text % column, foreground=colour)
+
+        prop_cb.bind('<<ComboboxSelected>>', _show)
+        _show()
+
+        row = tk.Frame(win, background=_C_WIN)
+        row.pack(fill='x', padx=10, pady=8)
+
+        def _save_plot():
+            p = filedialog.asksaveasfilename(
+                parent=win, defaultextension='.png',
+                filetypes=[('PNG image', '*.png'), ('PDF', '*.pdf')],
+                title='Save the %s plot as' % state['column'])
+            if p:
+                state['fig'].savefig(p, dpi=300, bbox_inches='tight')
+                messagebox.showinfo('Saved', 'Plot saved to:\n%s' % p, parent=win)
+
+        def _save_all():
+            p = filedialog.asksaveasfilename(
+                parent=win, defaultextension='.png',
+                filetypes=[('PNG image', '*.png'), ('PDF', '*.pdf')],
+                title='Save an overview of all properties as')
+            if not p:
+                return
+            fig_all, _ = create_distribution_figure(
+                df, columns, wavelength_cols=wl_cols, palette=palette,
+                max_cols=len(columns))
+            fig_all.savefig(p, dpi=300, bbox_inches='tight')
+            messagebox.showinfo('Saved', 'Overview saved to:\n%s' % p, parent=win)
+
+        ttk.Button(row, text='Save This Plot (300 DPI)', style='Action.TButton',
+                   command=_save_plot).pack(side='left')
+        ttk.Button(row, text='Save All Properties', style='Action.TButton',
+                   command=_save_all).pack(side='left', padx=(6, 0))
+        ttk.Button(row, text='Close', style='Action.TButton',
+                   command=win.destroy).pack(side='right')
 
     def _populate_treeview(self, tv, df):
         tv.delete(*tv.get_children())
@@ -1275,7 +2008,7 @@ class ParacudaConverter(tk.Tk):
 
         msg = (
             "Values like %.4g \u2013 %.4g were detected in the wavelength column.\n"
-            "Please confirm the units so Paracuda Converter can apply the\n"
+            "Please confirm the units so PARACUDA-NG Converter can apply the\n"
             "correct nm conversion."
         ) % (min_wl, max_wl)
         ttk.Label(dlg, text=msg, padding=(20, 4, 20, 8)).pack(fill='x')
@@ -1461,7 +2194,7 @@ class ParacudaConverter(tk.Tk):
             self._out_path.set(base + "_paracuda.xlsx")
 
         self._set_status(
-            'Conversion complete — %d samples, %d spectral bands, %d properties.'
+            'Conversion complete - %d samples, %d spectral bands, %d properties.'
             % (n_samples, n_wl, max(n_props, 0)))
         self._nb.select(2)
 

@@ -1,9 +1,9 @@
 """
-Shared imports for the Paracuda GUI package.
+Shared imports for the PARACUDA-NG GUI package.
 
 This module provides the shared module-level namespace for the
-``SpectralAnalyzer`` GUI.  Every ``gui`` module does ``from gui._deps import *``
-so that each group of methods sees precisely the same names — no per-file import
+``Paracuda`` GUI.  Every ``gui`` module does ``from gui._deps import *``
+so that each group of methods sees precisely the same names - no per-file import
 guesswork and no risk of a missed symbol.
 
 @author: Sharad Kumar Gupta
@@ -12,7 +12,9 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 import numpy as np
+import math
 import multiprocessing
+import re
 import threading
 from typing import Any
 from datetime import datetime
@@ -39,8 +41,8 @@ mean_squared_error = LazyCallable('sklearn.metrics', 'mean_squared_error')
 r2_score = LazyCallable('sklearn.metrics', 'r2_score')
 mean_absolute_error = LazyCallable('sklearn.metrics', 'mean_absolute_error')
 # Force the non-interactive Agg backend BEFORE matplotlib.pyplot is ever imported.
-# Every figure in Paracuda is either embedded in Tk via FigureCanvasTkAgg or written
-# to a PDF — none are shown with plt.show() — so the interactive TkAgg backend is not
+# Every figure in PARACUDA-NG is either embedded in Tk via FigureCanvasTkAgg or written
+# to a PDF - none are shown with plt.show() - so the interactive TkAgg backend is not
 # needed.  TkAgg's pyplot-managed figure managers register Tcl async handlers which,
 # torn down at interpreter exit, cause the fatal "Tcl_AsyncDelete: async handler
 # deleted by the wrong thread" crash (and the noisy "main thread is not in main loop"
@@ -68,13 +70,17 @@ from preprocessing.data_processing import (safe_interpolate_spectra, preprocess_
                               spectral_transfer_function, SENSOR_OPTIONS,
                               resample_spectra, analyze_missing_data,
                               handle_missing_data, MISSING_DATA_METHODS,
+                              PREPROCESS_METHODS, FITTED_PREPROCESS_METHODS,
+                              fit_msc_reference, ensure_msc_reference,
                               remove_target_outliers, TARGET_OUTLIER_METHODS,
                               RESAMPLE_METHODS, normalize_resample_method,
                               estimate_fwhms_from_grid,
                               get_sensor_bands, load_fwhm_csv, load_srf_csv,
                               # (compositional imported separately below)
                               parse_exclude_ranges, WATER_ABSORPTION_RANGES,
-                              NOISY_EDGE_RANGES)
+                              NOISY_EDGE_RANGES, noisy_edge_ranges,
+                              water_absorption_ranges, merge_exclude_ranges,
+                              format_exclude_ranges)
 from preprocessing.compositional import (forward as comp_forward,
                               inverse as comp_inverse, close as comp_close,
                               n_coords as comp_n_coords, TRANSFORMS as COMP_TRANSFORMS)
@@ -82,7 +88,7 @@ from models.model_training import (create_model, optimize_components_parallel,
                             parse_parameter_value, clamp_n_components)
 from models.hyperparameter_tuning import (tune_hyperparameters, format_params,
                                     format_search_space, search_space_table)
-from validation.cross_validation import perform_cross_validation
+from validation.cross_validation import perform_cross_validation, cv_derived_metrics
 from utils.image_processing import (process_image_for_prediction, save_prediction_image,
                               save_cube_image, read_geospatial_image,
                               open_image_filetypes, driver_for_path)
@@ -96,8 +102,19 @@ from utils.file_operations import (save_results_to_excel, generate_default_filen
                               save_transfer_function, load_transfer_function)
 from models.batch_processing import (suggest_best_model, create_scatter_plot,
                               create_feature_importance_plot, create_comparison_plots,
-                              create_reflectance_spectra_plot, assess_overfitting)
-from utils.help_assistant import HelpAssistant
+                              create_reflectance_spectra_plot, assess_overfitting,
+                              compute_metrics, compute_rpd, compute_nrmsep,
+                              rpd_quality)
+from utils.help_assistant import HelpAssistant, parse_help_blocks
+from utils.data_distribution import (create_distribution_figure,
+                                     create_property_figure,
+                                     summarize_distribution,
+                                     distribution_report_text,
+                                     property_report_text,
+                                     overall_severity,
+                                     suggest_numeric_columns)
+from utils.integrity_plots import (create_mixing_figure,
+                                   label_reassignment_rows)
 
 # Export the full namespace (including the single-underscore converter names) so
 # ``from gui._deps import *`` reproduces the original module scope exactly.

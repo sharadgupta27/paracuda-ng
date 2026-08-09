@@ -93,7 +93,7 @@ def safe_interpolate_spectra(X, original_wavelengths, new_wavelengths, kind="lin
 
         if new_min < orig_min or new_max > orig_max:
             # Silently clip new_wavelengths to the original data bounds rather
-            # than raising – the filter step already tried to prevent this, but
+            # than raising - the filter step already tried to prevent this, but
             # floating-point drift can still produce tiny overshoots.
             new_wavelengths = new_wavelengths[
                 (new_wavelengths >= orig_min) & (new_wavelengths <= orig_max)
@@ -123,7 +123,7 @@ def safe_interpolate_spectra(X, original_wavelengths, new_wavelengths, kind="lin
         # Sort all spectra in one shot (vectorized column reorder)
         sorted_X = X[:, sort_indices]  # shape (n_samples, n_wavelengths)
 
-        # Bulk NaN/Inf check — much faster than per-row validation
+        # Bulk NaN/Inf check - much faster than per-row validation
         if np.any(~np.isfinite(sorted_X)):
             bad_rows = np.where(np.any(~np.isfinite(sorted_X), axis=1))[0]
             raise ValueError(
@@ -168,12 +168,47 @@ MISSING_DATA_METHODS = [
     "Fill with zero",
 ]
 
+# Spectral preprocessing methods, in GUI dropdown order; the first entry is the
+# "leave the spectra alone" baseline.  Every GUI (Tkinter desktop, Qt/QGIS panel)
+# builds its dropdown from this list so the three versions cannot drift apart.
+PREPROCESS_METHODS = [
+    "No Preprocessing",
+    "Smoothing",
+    "Spectral Outlier Removal",
+    "Continuum Removal",
+    "Baseline Correction",
+    "First Derivative",
+    "Second Derivative",
+    "Absorbance",
+    "Standard Normal Variate",
+    "Multiplicative Scatter Correction",
+]
+
+# Methods whose transform is fitted on the training set and therefore has to be
+# carried inside the saved model (see ensure_msc_reference).
+FITTED_PREPROCESS_METHODS = {"Multiplicative Scatter Correction"}
+
+# The scatter corrections are spelled out in full in the GUI, but the literature
+# and older saved models use the acronyms, so both are accepted on input.
+PREPROCESS_ALIASES = {
+    "SNV": "Standard Normal Variate",
+    "MSC": "Multiplicative Scatter Correction",
+}
+
+
+def normalize_preprocess_method(method):
+    """Return the canonical method name, resolving acronym aliases."""
+    if method is None:
+        return method
+    name = str(method).strip()
+    return PREPROCESS_ALIASES.get(name.upper(), name)
+
 
 def analyze_missing_data(df, wavelength_cols=None, property_cols=None):
     """Summarise missing (NaN / empty / non-numeric) values in a loaded DataFrame.
 
-    A cell counts as missing when it is NaN/None, or — for columns expected to
-    be numeric (the wavelength columns) — when it cannot be coerced to a finite
+    A cell counts as missing when it is NaN/None, or - for columns expected to
+    be numeric (the wavelength columns) - when it cannot be coerced to a finite
     float (blank strings, text, Inf).
 
     Parameters
@@ -243,15 +278,15 @@ def handle_missing_data(X, y, method="Drop rows with missing"):
     chosen ``method``.  The ``method`` only governs how missing values inside the
     spectral matrix ``X`` are treated:
 
-      * "Drop rows with missing" – drop any sample that still has a missing
+      * "Drop rows with missing" - drop any sample that still has a missing
         band value.
-      * "Mean imputation"        – replace each missing value with that band's
+      * "Mean imputation"        - replace each missing value with that band's
         (column) mean over the finite samples.
-      * "Median imputation"      – as above, using the column median.
-      * "Spectral interpolation" – linearly interpolate missing values along the
+      * "Median imputation"      - as above, using the column median.
+      * "Spectral interpolation" - linearly interpolate missing values along the
         wavelength axis within each spectrum (edges/all-NaN fall back to the
         band mean, then 0).
-      * "Fill with zero"         – replace every missing value with 0.
+      * "Fill with zero"         - replace every missing value with 0.
 
     Parameters
     ----------
@@ -285,7 +320,7 @@ def handle_missing_data(X, y, method="Drop rows with missing"):
 
     if X.shape[0] == 0:
         raise ValueError(
-            "Every sample has a missing target value — nothing left to train on. "
+            "Every sample has a missing target value - nothing left to train on. "
             "Check the selected property column.")
 
     rows_dropped_missing = 0
@@ -307,7 +342,7 @@ def handle_missing_data(X, y, method="Drop rows with missing"):
                     fill = np.nanmean(Xm, axis=0)
                 else:
                     fill = np.nanmedian(Xm, axis=0)
-            # Bands that are entirely missing have no statistic — use 0.
+            # Bands that are entirely missing have no statistic - use 0.
             fill = np.where(np.isfinite(fill), fill, 0.0)
             X = np.where(missing, fill[None, :], X)
         elif method == "Spectral interpolation":
@@ -382,9 +417,9 @@ def handle_missing_data(X, y, method="Drop rows with missing"):
 # them before training often yields a more robust model.  Two selectable
 # criteria mirror the reference DataPreprocessor implementation:
 #
-#   * "zscore" – drop samples whose target is more than ``threshold`` standard
+#   * "zscore" - drop samples whose target is more than ``threshold`` standard
 #                deviations from the mean.
-#   * "iqr"    – drop samples outside [Q1 - k·IQR, Q3 + k·IQR] where k = threshold.
+#   * "iqr"    - drop samples outside [Q1 - k·IQR, Q3 + k·IQR] where k = threshold.
 
 # GUI dropdown order; the first entry is the default.
 TARGET_OUTLIER_METHODS = ["zscore", "iqr"]
@@ -441,17 +476,54 @@ def remove_target_outliers(y, method="zscore", threshold=2.5):
     return inside | ~finite
 
 
+def fit_msc_reference(spectra):
+    """Return the Multiplicative Scatter Correction reference spectrum (the mean
+    spectrum) for *spectra*.
+
+    Multiplicative Scatter Correction regresses every spectrum against a
+    reference.  The reference has to be the **training** mean, otherwise a model
+    applied to new samples (or to an image) would be corrected against a
+    different baseline than it was fitted on.  Callers therefore compute it once
+    at training time and store it in the preprocessing kwargs, which travel with
+    the saved model.
+    """
+    X = np.asarray(spectra, dtype=float)
+    if X.ndim == 1:
+        X = X[None, :]
+    return np.nanmean(X, axis=0)
+
+
+def ensure_msc_reference(spectra, method, kwargs):
+    """Populate ``kwargs['msc_reference']`` for Multiplicative Scatter
+    Correction, in place.
+
+    A no-op for every other method, and for Multiplicative Scatter Correction
+    when a reference is already present (a loaded model, or a re-run of the same
+    configuration).
+    """
+    if (normalize_preprocess_method(method) in FITTED_PREPROCESS_METHODS
+            and not len(np.asarray(kwargs.get('msc_reference') or []))):
+        kwargs['msc_reference'] = [float(v) for v in fit_msc_reference(spectra)]
+    return kwargs
+
+
 def preprocess_spectra(spectra, method, **kwargs):
     """
     Apply preprocessing to spectral data
-    
+
     Args:
         spectra: Spectral data array
         method: Preprocessing method name
         **kwargs: Additional parameters for specific methods
             - window_length, polyorder for Smoothing
             - outlier_method, threshold for Outlier Removal
+            - baseline_method, degree for Baseline Correction
+            - msc_reference for Multiplicative Scatter Correction (the training
+              mean spectrum; when absent the mean of *spectra* is used, i.e. the
+              batch corrects against itself)
     """
+    # Accept the SNV / MSC acronyms as well as the spelled-out names.
+    method = normalize_preprocess_method(method)
     try:
         if method == "Smoothing":
             window_length = kwargs.get('window_length', 11)
@@ -510,6 +582,52 @@ def preprocess_spectra(spectra, method, **kwargs):
             spectra_safe = np.maximum(spectra, 1e-10)
             return -np.log10(spectra_safe)
 
+        elif method == "Standard Normal Variate":
+            # Standard Normal Variate (Barnes, Dhanoa & Lister 1989): centre and
+            # scale each spectrum by its OWN mean and standard deviation, which
+            # removes multiplicative scatter and additive baseline together.
+            # Row-wise, so it needs no reference and no fitting - every spectrum
+            # is corrected independently and new samples behave identically.
+            X = np.asarray(spectra, dtype=float)
+            mu = np.nanmean(X, axis=1, keepdims=True)
+            # ddof=1 matches the original sample-standard-deviation definition.
+            sd = np.nanstd(X, axis=1, ddof=1, keepdims=True)
+            # A flat spectrum has sd 0; leave it centred rather than dividing by 0.
+            sd = np.where(np.abs(sd) < 1e-10, 1.0, sd)
+            return (X - mu) / sd
+
+        elif method == "Multiplicative Scatter Correction":
+            # Geladi, MacDougall & Martens (1985): least-squares fit each
+            # spectrum against a reference, x_i = a_i * ref + b_i, then undo it
+            # as (x_i - b_i) / a_i.  Unlike Standard Normal Variate this is a
+            # *fitted* transform - the reference must be the one used at training
+            # time (see fit_msc_reference / ensure_msc_reference).
+            X = np.asarray(spectra, dtype=float)
+            ref = kwargs.get('msc_reference')
+            ref = (np.asarray(ref, dtype=float).ravel()
+                   if ref is not None and len(np.asarray(ref).ravel())
+                   else np.nanmean(X, axis=0))
+            if ref.shape[0] != X.shape[1]:
+                raise ValueError(
+                    f"Multiplicative Scatter Correction reference has "
+                    f"{ref.shape[0]} bands but the spectra have {X.shape[1]}. "
+                    f"The model was trained on a different band grid.")
+            ref_c = ref - ref.mean()
+            denom = float(ref_c @ ref_c)
+            if denom < 1e-12:
+                # Featureless reference - no scatter direction to correct along.
+                return X
+            x_mean = np.nanmean(X, axis=1, keepdims=True)
+            slope = ((X - x_mean) @ ref_c) / denom          # a_i, one per spectrum
+            # A near-zero slope means the spectrum carries no reference shape;
+            # dividing by it would explode, so leave those spectra uncorrected.
+            safe = np.abs(slope) > 1e-10
+            intercept = x_mean.ravel() - slope * ref.mean()  # b_i
+            out = X.copy()
+            out[safe] = ((X[safe] - intercept[safe, None])
+                         / slope[safe, None])
+            return out
+
         elif method == "Baseline Correction":
             # Proper baseline correction using the lower-envelope (rubber-band) approach.
             # The baseline is estimated from the spectral MINIMA, not through peaks,
@@ -535,7 +653,7 @@ def preprocess_spectra(spectra, method, **kwargs):
                 return np.array(anchors_idx, dtype=float), sp[anchors_idx]
 
             if baseline_method == 'linear':
-                # Vectorised rubber-band baseline — no Python loop over samples.
+                # Vectorised rubber-band baseline - no Python loop over samples.
                 # Use the minimum of the first/last 5% of bands as endpoint anchors
                 # so a strong peak at band 0 or n-1 cannot inflate the baseline.
                 if n == 1:
@@ -549,7 +667,7 @@ def preprocess_spectra(spectra, method, **kwargs):
                 # Clamp to lower envelope and subtract
                 baselines = np.minimum(baselines, spectra)
                 return spectra - baselines
-            else:  # polynomial — anchor positions differ per spectrum, keep loop
+            else:  # polynomial - anchor positions differ per spectrum, keep loop
                 for i in range(spectra.shape[0]):
                     sp = spectra[i, :].astype(float)
                     degree = int(kwargs.get('degree', 3))
@@ -608,12 +726,12 @@ def calculate_statistics(data):
 #   "thermal_fwhm"    : (optional) matching FWHM of the thermal bands
 #
 # Where "*_fwhm" is omitted (the hyperspectral sensors), the FWHM of each band
-# is estimated from the local band spacing — a good approximation for the
+# is estimated from the local band spacing - a good approximation for the
 # Nyquist-sampled hyperspectral instruments (EnMAP / EMIT / PRISMA).
 #
 # When the loaded data lies in the VIS-NIR-SWIR range only, the thermal bands
 # are NOT used (they would fall far outside the data and only cause
-# extrapolation errors) — this satisfies the requirement to exclude the
+# extrapolation errors) - this satisfies the requirement to exclude the
 # Thermal-Infrared range of Sentinel-2 / Landsat-8 for VIS-NIR-SWIR data.
 #
 # Sentinel-2 (MSI) and Landsat-8 (OLI/TIRS) use the published multispectral
@@ -682,12 +800,12 @@ _EMIT_REFLECTIVE = [
     2471, 2478, 2486, 2493,
 ]
 
-# PRISMA nominal band centres — ~10 nm sampling across its 400-2500 nm range
+# PRISMA nominal band centres - ~10 nm sampling across its 400-2500 nm range
 # (239 bands). Exact centres are scene-dependent; this nominal grid is used as
 # the resampling target.
 _PRISMA_REFLECTIVE = [round(float(w)) for w in np.linspace(402, 2497, 239)]
 
-# Landsat-9 OLI-2 — spectrally identical to Landsat-8 OLI (same band centres and
+# Landsat-9 OLI-2 - spectrally identical to Landsat-8 OLI (same band centres and
 # FWHM), including the two TIRS-2 thermal bands.
 _L9_REFLECTIVE = [443, 482, 561, 655, 865, 1609, 2201]
 _L9_FWHM       = [ 16,  60,  57,  37,  28,   85,  187]
@@ -708,16 +826,16 @@ _L5_FWHM       = [ 70,  80,  60, 140,  200,  270]
 _L5_THERMAL      = [11450]
 _L5_THERMAL_FWHM = [ 2100]
 
-# VENµS (VENUS) — 12 narrow VNIR super-spectral bands (user-provided centres).
+# VENµS (VENUS) - 12 narrow VNIR super-spectral bands (user-provided centres).
 _VENUS_REFLECTIVE = [424, 447, 492, 555, 620, 621, 666, 702, 741, 782, 861, 909]
 _VENUS_FWHM       = [ 40,  40,  40,  40,  40,  40,  30,  25,  16,  20,  40,  20]
 
-# PlanetScope (SuperDove, PSB.SD) — 8 VNIR bands (coastal-blue, blue, green-I,
+# PlanetScope (SuperDove, PSB.SD) - 8 VNIR bands (coastal-blue, blue, green-I,
 # green, yellow, red, red-edge, NIR) with nominal FWHM.
 _PLANETSCOPE_REFLECTIVE = [443, 490, 531, 565, 610, 665, 705, 865]
 _PLANETSCOPE_FWHM       = [ 20,  50,  36,  36,  20,  31,  15,  40]
 
-# DESIS (DLR Earth Sensing Imaging Spectrometer) — hyperspectral VNIR, 235 bands
+# DESIS (DLR Earth Sensing Imaging Spectrometer) - hyperspectral VNIR, 235 bands
 # over ~401-1000 nm at ~2.55 nm sampling (FWHM ~3.5 nm, derived from spacing).
 _DESIS_REFLECTIVE = [round(float(w), 1) for w in np.linspace(402.0, 999.0, 235)]
 
@@ -756,19 +874,19 @@ _THERMAL_THRESHOLD_NM = 3000.0
 # ---------------------------------------------------------------------------
 #
 # Six user-selectable resampling methods (GUI dropdown order):
-#   * Interpolation family — reproject onto the target grid without any notion
+#   * Interpolation family - reproject onto the target grid without any notion
 #     of instrument bandwidth:
-#       "Linear Interpolation"    — piecewise-linear (interp1d kind='linear')
-#       "Quadratic Interpolation" — 2nd-order spline (kind='quadratic', ≥3 pts)
-#       "Cubic Spline"            — natural cubic spline (kind='cubic', ≥4 pts)
-#   * Bandwidth-aware family — integrate the source spectrum under each target
+#       "Linear Interpolation"    - piecewise-linear (interp1d kind='linear')
+#       "Quadratic Interpolation" - 2nd-order spline (kind='quadratic', ≥3 pts)
+#       "Cubic Spline"            - natural cubic spline (kind='cubic', ≥4 pts)
+#   * Bandwidth-aware family - integrate the source spectrum under each target
 #     band's spectral-response function; every one of these needs a per-band
 #     FWHM (or an explicit response curve):
-#       "Gaussian SRF"  — analytic Gaussian response (σ = FWHM / 2.3548, ±3σ)
-#       "Empirical SRF" — integrate against an uploaded per-band response curve;
+#       "Gaussian SRF"  - analytic Gaussian response (σ = FWHM / 2.3548, ±3σ)
+#       "Empirical SRF" - integrate against an uploaded per-band response curve;
 #                         falls back to the Gaussian response where no curve is
 #                         supplied
-#       "Band Averaging"— flat (tophat) response over each band's FWHM window
+#       "Band Averaging"- flat (tophat) response over each band's FWHM window
 # ---------------------------------------------------------------------------
 RESAMPLE_METHODS = [
     "Linear Interpolation",
@@ -784,7 +902,7 @@ RESAMPLE_METHODS = [
 _FWHM_METHODS = {"Gaussian SRF", "Empirical SRF", "Band Averaging"}
 
 # Map the interpolation methods to their scipy ``interp1d`` ``kind``.  Nearest-
-# neighbour picks each target band's closest source band unchanged — useful when
+# neighbour picks each target band's closest source band unchanged - useful when
 # linear interpolation would smear sharp absorption features across a coarse grid.
 _INTERP_KINDS = {
     "Linear Interpolation": "linear",
@@ -869,7 +987,7 @@ def get_sensor_bands(sensor, include_thermal=False):
             raise ValueError(f"Sensor '{sensor}': {fwhm_key} length "
                              f"({len(fwhms)}) does not match {centers_key} "
                              f"({len(centers)}).")
-        # None marks "no explicit FWHM" — filled from spacing later.
+        # None marks "no explicit FWHM" - filled from spacing later.
         return [(float(c), (float(fwhms[i]) if fwhms else None))
                 for i, c in enumerate(centers)]
 
@@ -1056,7 +1174,7 @@ def empirical_srf_integrate(X, original_wavelengths, centers, fwhms, srf_table=N
         R_b = Σ_i (S_i · r_b(λ_i) · Δλ_i) / Σ_i (r_b(λ_i) · Δλ_i)
 
     where ``r_b`` is the band's response interpolated onto the input grid.  Any
-    band **without** a usable curve — or when ``srf_table`` is ``None`` — falls
+    band **without** a usable curve - or when ``srf_table`` is ``None`` - falls
     back to the analytic Gaussian response of :func:`srf_convolve_spectra`, so
     this method always produces a full output even with a partial SRF file.
 
@@ -1064,7 +1182,7 @@ def empirical_srf_integrate(X, original_wavelengths, centers, fwhms, srf_table=N
         X: (n_samples, n_bands) spectra.
         original_wavelengths: length-n_bands wavelengths (nm) of ``X``.
         centers: target band centres (nm).
-        fwhms: matching FWHMs (nm) — used for the Gaussian fallback.
+        fwhms: matching FWHMs (nm) - used for the Gaussian fallback.
         srf_table: optional ``{center_nm: (wl_array, response_array)}`` mapping.
 
     Returns:
@@ -1147,7 +1265,7 @@ def resample_spectra(X, original_wavelengths, new_wavelengths,
         method: one of :data:`RESAMPLE_METHODS` (legacy labels accepted via
             :func:`normalize_resample_method`).
         fwhms: required for the bandwidth-aware methods (Gaussian / Empirical SRF
-            and Band Averaging) — per-band FWHM (nm) matching ``new_wavelengths``.
+            and Band Averaging) - per-band FWHM (nm) matching ``new_wavelengths``.
         srf_table: optional per-band response curves for "Empirical SRF".
 
     Returns:
@@ -1159,7 +1277,7 @@ def resample_spectra(X, original_wavelengths, new_wavelengths,
         return safe_interpolate_spectra(X, original_wavelengths, new_wavelengths,
                                         kind=_INTERP_KINDS[canonical])
 
-    # Bandwidth-aware family — all require per-band FWHMs.
+    # Bandwidth-aware family - all require per-band FWHMs.
     if fwhms is None:
         raise ValueError(f"'{canonical}' resampling requires per-band FWHM values.")
     if canonical == "Gaussian SRF":
@@ -1177,7 +1295,7 @@ def apply_spectral_binning(bands, bin_size, fwhms=None):
     """Reduce a band grid by decimation binning (after Ori_Code_TAU
     ``get_resample_bands`` Step 3).
 
-    One representative band is kept per consecutive group of ``bin_size`` bands —
+    One representative band is kept per consecutive group of ``bin_size`` bands -
     the band at the centre of each group (index ``i`` where
     ``i % bin_size == bin_size // 2``).  As a safety guard (mirroring the
     reference), binning is skipped unless the grid has more than ``bin_size * 3``
@@ -1214,6 +1332,69 @@ def apply_spectral_binning(bands, bin_size, fwhms=None):
 # the GUI's "exclude ranges" control (nm).
 WATER_ABSORPTION_RANGES = [(1350.0, 1450.0), (1800.0, 1960.0)]
 NOISY_EDGE_RANGES = [(350.0, 400.0), (2450.0, 2500.0)]
+
+# Noisy detector edges are a property of the *sensor*, so they differ per
+# spectral domain.  A VSWIR spectroradiometer rolls off at its silicon/InGaAs
+# limits (350-400 and 2450-2500 nm); an LWIR/FTIR instrument rolls off at the
+# MCT detector limits instead, which is why emissivity work is normally
+# restricted to the 8-12 um atmospheric window.  Offering the VSWIR numbers in
+# an LWIR dataset excluded nothing at all, which is what made the button look
+# broken.
+NOISY_EDGE_RANGES_BY_DOMAIN = {
+    "VSWIR": [(350.0, 400.0), (2450.0, 2500.0)],
+    "LWIR": [(7500.0, 8000.0), (12000.0, 14000.0)],
+    "VSWIR+LWIR": [(350.0, 400.0), (2450.0, 2500.0),
+                   (7500.0, 8000.0), (12000.0, 14000.0)],
+}
+
+# Water vapour absorbs in the VSWIR only; in an LWIR-only dataset there is
+# nothing for the H2O preset to remove.
+WATER_ABSORPTION_RANGES_BY_DOMAIN = {
+    "VSWIR": list(WATER_ABSORPTION_RANGES),
+    "LWIR": [],
+    "VSWIR+LWIR": list(WATER_ABSORPTION_RANGES),
+}
+
+
+def noisy_edge_ranges(domain=None):
+    """Noisy detector-edge preset for ``domain`` ('VSWIR', 'LWIR', 'VSWIR+LWIR')."""
+    return list(NOISY_EDGE_RANGES_BY_DOMAIN.get(
+        str(domain or "VSWIR").upper(), NOISY_EDGE_RANGES))
+
+
+def water_absorption_ranges(domain=None):
+    """Atmospheric water-vapour preset for ``domain`` (empty for LWIR-only)."""
+    return list(WATER_ABSORPTION_RANGES_BY_DOMAIN.get(
+        str(domain or "VSWIR").upper(), WATER_ABSORPTION_RANGES))
+
+
+def merge_exclude_ranges(*specs):
+    """Merge one or more exclude-range specs into a minimal, sorted list.
+
+    Overlapping and touching ranges are fused into one, so pressing a preset
+    button repeatedly (or pressing two presets that share a band) can never
+    stack duplicate entries in the GUI's Omit field.  Each argument may be a
+    string or an iterable of ``(lo, hi)`` pairs; see :func:`parse_exclude_ranges`.
+    """
+    pairs = []
+    for spec in specs:
+        pairs.extend(parse_exclude_ranges(spec))
+    merged = []
+    for lo, hi in sorted(pairs):
+        if merged and lo <= merged[-1][1]:
+            # Overlaps (or exactly abuts) the previous range - widen it instead
+            # of appending a second entry covering the same bands.
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def format_exclude_ranges(ranges):
+    """Render ``[(lo, hi), ...]`` back into the GUI's ``"lo-hi, lo-hi"`` text."""
+    def _fmt(v):
+        return f"{v:g}" if float(v) != int(v) else str(int(v))
+    return ", ".join(f"{_fmt(lo)}-{_fmt(hi)}" for lo, hi in ranges)
 
 
 def parse_exclude_ranges(spec):
@@ -1352,15 +1533,15 @@ def filter_wavelengths(wavelengths, min_wave, max_wave, resampling, spacing,
     Empirical SRF, Band Averaging).
 
     Resampling modes (only when ``resampling == "Yes"``):
-      * ``sensor`` is None / "Custom" — uniform grid at ``spacing`` nm.
-      * ``sensor`` is a satellite key  — resample onto that sensor's nominal
+      * ``sensor`` is None / "Custom" - uniform grid at ``spacing`` nm.
+      * ``sensor`` is a satellite key  - resample onto that sensor's nominal
         band centres.  The Thermal-Infrared bands of Sentinel-2 / Landsat-8 are
         only used when the data itself reaches the thermal range.
 
     Method (``resample_method``, one of :data:`RESAMPLE_METHODS`):
-      * Interpolation family — the target centre must lie within the data range
+      * Interpolation family - the target centre must lie within the data range
         so interpolation never extrapolates.
-      * Bandwidth-aware family — a band is kept only when its full FWHM window
+      * Bandwidth-aware family - a band is kept only when its full FWHM window
         lies inside the data range, so every response function is fully sampled
         (no biased partial-coverage bands).  On a Custom sensor these methods use
         ``custom_fwhm`` if given, else the uniform ``spacing`` as the FWHM.
@@ -1431,7 +1612,7 @@ def filter_wavelengths(wavelengths, min_wave, max_wave, resampling, spacing,
             if centers is not None:
                 if needs_fwhm:
                     # Keep a band only when its full FWHM window is covered by the
-                    # data — guarantees a fully-sampled response function.
+                    # data - guarantees a fully-sampled response function.
                     keep = ((centers - fwhms / 2.0 >= data_min) &
                             (centers + fwhms / 2.0 <= data_max))
                 else:
@@ -1447,7 +1628,7 @@ def filter_wavelengths(wavelengths, min_wave, max_wave, resampling, spacing,
                     raise Exception(
                         f"{label} has fewer than 2 {window} within the "
                         f"data range ({data_min:.0f}-{data_max:.0f} nm). "
-                        f"Cannot resample — widen the Min/Max wavelength range, "
+                        f"Cannot resample - widen the Min/Max wavelength range, "
                         f"reduce exclusions, switch to an interpolation method, "
                         f"or choose a sensor that overlaps the data."
                     )
@@ -1526,7 +1707,7 @@ def calculate_confidence_interval(y_true, y_pred, confidence=0.95):
         n_bootstraps = 1000
 
         rng = np.random.RandomState(42)
-        # Generate all bootstrap indices at once — avoids 1000-iteration Python loop
+        # Generate all bootstrap indices at once - avoids 1000-iteration Python loop
         all_indices = rng.randint(0, n, (n_bootstraps, n))  # shape (1000, n)
 
         y_true_boots = y_true[all_indices]  # shape (1000, n)
@@ -1584,14 +1765,14 @@ def randomize_label_test(X, y, n_permutations=100, n_components=5, cv=5):
     X : array (n_samples, n_features)
     y : array (n_samples,)
     n_permutations : int
-    n_components : int   – latent variables for PLS-R
-    cv : int             – number of CV folds (the caller should pass the SAME
+    n_components : int   - latent variables for PLS-R
+    cv : int             - number of CV folds (the caller should pass the SAME
                            value used for the observed R² so the null
                            distribution is directly comparable)
 
     Returns
     -------
-    perm_r2 : list of float   – permuted CV-R² scores
+    perm_r2 : list of float   - permuted CV-R² scores
     """
     n_comp = min(n_components, X.shape[0] - 2, X.shape[1])
     model = PLSRegression(n_components=max(1, n_comp))
@@ -1637,9 +1818,9 @@ def mix_spectra_integrity_check(X, y, mix_fraction=0.2, random_seed=42):
 
     Returns
     -------
-    X_mixed     : array  – spectral matrix (unchanged copy of X)
-    y_mixed     : array  – chemistry vector with the selected labels reassigned
-    changed_idx : ndarray(int) – indices whose label VALUE actually changed
+    X_mixed     : array  - spectral matrix (unchanged copy of X)
+    y_mixed     : array  - chemistry vector with the selected labels reassigned
+    changed_idx : ndarray(int) - indices whose label VALUE actually changed
                   (``len(changed_idx)`` is the true number of affected samples;
                   duplicate y-values can leave a reassigned position unchanged,
                   and this is reported honestly rather than overstated)
@@ -1682,7 +1863,7 @@ def spectral_transfer_function(X_source, X_target, n_components=5):
     pls      : fitted PLSRegression  (source → target)
     scaler_s : StandardScaler for source
     scaler_t : StandardScaler for target
-    r2_per_band : array  – per-band R² of the mapping
+    r2_per_band : array  - per-band R² of the mapping
     """
     scaler_s = StandardScaler()
     scaler_t = StandardScaler()
@@ -1694,7 +1875,7 @@ def spectral_transfer_function(X_source, X_target, n_components=5):
     pls.fit(X_s, X_t)
 
     X_t_pred = pls.predict(X_s)
-    # Vectorized R² across all bands — eliminates per-band Python loop
+    # Vectorized R² across all bands - eliminates per-band Python loop
     ss_res = np.sum((X_t - X_t_pred) ** 2, axis=0)
     ss_tot = np.sum((X_t - X_t.mean(axis=0)) ** 2, axis=0)
     r2_per_band = 1.0 - ss_res / (ss_tot + 1e-12)

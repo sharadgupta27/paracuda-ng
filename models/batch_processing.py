@@ -11,8 +11,119 @@ import pandas as pd
 from utils.lazy_imports import LazyModule, LazyCallable
 
 plt = LazyModule('matplotlib.pyplot')
+cm = LazyModule('matplotlib.cm')
 Figure = LazyCallable('matplotlib.figure', 'Figure')
 PdfPages = LazyCallable('matplotlib.backends.backend_pdf', 'PdfPages')
+
+
+# ── Accuracy metrics ─────────────────────────────────────────────────────────
+# RPD and normalized RMSEP are reported alongside R2 / RMSE / MAE everywhere a
+# model is scored, so single runs, batch runs, cross-validation and the exported
+# workbooks all speak the same language.
+
+def compute_rpd(y_true, y_pred=None, rmse=None):
+    """Ratio of Performance to Deviation: SD(observed) / RMSE.
+
+    The standard chemometric measure of how useful a calibration is relative to
+    the natural spread of the property.  Pass either predictions or a
+    precomputed RMSE.  Uses the sample standard deviation (ddof=1) of the
+    OBSERVED values, which is the usual convention.
+
+    Returns ``nan`` when it cannot be computed (fewer than 2 samples, or a
+    perfect fit where RMSE is 0 and the ratio is unbounded).
+    """
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    if y_true.size < 2:
+        return float("nan")
+    if rmse is None:
+        if y_pred is None:
+            return float("nan")
+        y_pred = np.asarray(y_pred, dtype=float).ravel()
+        rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    rmse = float(rmse)
+    if not np.isfinite(rmse) or rmse <= 1e-12:
+        return float("nan")
+    sd = float(np.std(y_true, ddof=1))
+    if not np.isfinite(sd):
+        return float("nan")
+    return sd / rmse
+
+
+def compute_nrmsep(y_true, y_pred=None, rmse=None, norm="range"):
+    """Normalized RMSEP as a PERCENTAGE, so error is comparable across properties.
+
+    ``norm='range'`` (default) divides by max-min of the observed values;
+    ``norm='mean'`` divides by the observed mean.  Range normalization is the
+    more common reading of "normalized RMSE" and is well defined for properties
+    whose mean sits near zero, so it is what the GUI reports.
+    """
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    if y_true.size == 0:
+        return float("nan")
+    if rmse is None:
+        if y_pred is None:
+            return float("nan")
+        y_pred = np.asarray(y_pred, dtype=float).ravel()
+        rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    rmse = float(rmse)
+    if not np.isfinite(rmse):
+        return float("nan")
+    if norm == "mean":
+        denom = abs(float(np.mean(y_true)))
+    else:
+        denom = float(np.max(y_true) - np.min(y_true))
+    if not np.isfinite(denom) or denom <= 1e-12:
+        return float("nan")
+    return 100.0 * rmse / denom
+
+
+def compute_metrics(y_true, y_pred):
+    """Return the full metric set for one observed/predicted pair.
+
+    Keys: ``r2``, ``rmse``, ``mae``, ``rpd``, ``nrmsep`` (percent of observed
+    range) and ``nrmsep_mean`` (percent of observed mean).  ``rmsep`` is an alias
+    of ``rmse`` kept so test-split results can be referred to by the name used in
+    the chemometrics literature.
+    """
+    from sklearn.metrics import r2_score, mean_absolute_error
+
+    yt = np.asarray(y_true, dtype=float).ravel()
+    yp = np.asarray(y_pred, dtype=float).ravel()
+    rmse = float(np.sqrt(np.mean((yt - yp) ** 2))) if yt.size else float("nan")
+    try:
+        r2 = float(r2_score(yt, yp)) if yt.size >= 2 else float("nan")
+    except Exception:  # noqa: BLE001 - degenerate splits should not abort a run
+        r2 = float("nan")
+    try:
+        mae = float(mean_absolute_error(yt, yp)) if yt.size else float("nan")
+    except Exception:  # noqa: BLE001
+        mae = float("nan")
+    return {
+        "r2": r2,
+        "rmse": rmse,
+        "rmsep": rmse,
+        "mae": mae,
+        "rpd": compute_rpd(yt, rmse=rmse),
+        "nrmsep": compute_nrmsep(yt, rmse=rmse, norm="range"),
+        "nrmsep_mean": compute_nrmsep(yt, rmse=rmse, norm="mean"),
+    }
+
+
+def rpd_quality(rpd):
+    """Plain-language reading of an RPD value (Viscarra Rossel et al., 2006)."""
+    if rpd is None or not np.isfinite(rpd):
+        return "n/a"
+    if rpd < 1.0:
+        return "very poor"
+    if rpd < 1.4:
+        return "poor"
+    if rpd < 1.8:
+        return "fair"
+    if rpd < 2.0:
+        return "good"
+    if rpd < 2.5:
+        return "very good"
+    return "excellent"
 
 
 def assess_overfitting(train_r2, test_r2, train_rmse=None, test_rmse=None, cv_r2_mean=None):
@@ -20,7 +131,7 @@ def assess_overfitting(train_r2, test_r2, train_rmse=None, test_rmse=None, cv_r2
 
     Overfitting means the model fit the *training* data well but generalises poorly.
     A model that fits training badly (low/negative train R²) is underfitting, not
-    overfitting, so it must never be flagged here — that was the old false-positive.
+    overfitting, so it must never be flagged here - that was the old false-positive.
 
     Args:
         train_r2, test_r2:     R² on train / test splits.
@@ -44,7 +155,7 @@ def assess_overfitting(train_r2, test_r2, train_rmse=None, test_rmse=None, cv_r2
     rel_gap = gap / max(abs(train_r2), 1e-6)
     reasons = []
 
-    # Primary measures — ALL must hold for overfitting to be reported.
+    # Primary measures - ALL must hold for overfitting to be reported.
     learned_train = train_r2 >= 0.6           # model actually fit the training data
     abs_gap_large = gap > 0.15                 # sizeable absolute drop train → test
     rel_gap_large = rel_gap > 0.25             # test lost >25% of the training skill
@@ -105,6 +216,23 @@ def suggest_best_model(results_dict):
             'Train_R2': results.get('train_r2', 0),
             'Train_RMSE': results.get('train_rmse', float('inf'))
         }
+
+        # RMSEP / RPD / normalized RMSEP.  Prefer the values the caller already
+        # computed; fall back to deriving them from the stored observations so
+        # older result dicts still populate the comparison table.
+        row['Test_RMSEP'] = results.get('test_rmsep', row['Test_RMSE'])
+        rpd = results.get('test_rpd')
+        nrmsep = results.get('test_nrmsep')
+        if rpd is None or nrmsep is None:
+            y_true = results.get('y_test')
+            if y_true is not None and len(np.asarray(y_true).ravel()) >= 2:
+                if rpd is None:
+                    rpd = compute_rpd(y_true, rmse=row['Test_RMSE'])
+                if nrmsep is None:
+                    nrmsep = compute_nrmsep(y_true, rmse=row['Test_RMSE'])
+        row['Test_RPD'] = rpd if rpd is not None else float('nan')
+        row['Test_nRMSEP'] = nrmsep if nrmsep is not None else float('nan')
+        row['RPD_Quality'] = rpd_quality(row['Test_RPD'])
         
         # Add cross-validation metrics if available
         if results.get('cv_results'):
@@ -114,7 +242,7 @@ def suggest_best_model(results_dict):
             row['CV_R2_Mean'] = None
             row['CV_RMSE_Mean'] = None
         
-        # Overfitting indicator — multi-measure assessment (not just the R² gap)
+        # Overfitting indicator - multi-measure assessment (not just the R² gap)
         assessment = assess_overfitting(
             results.get('train_r2'), results.get('test_r2'),
             results.get('train_rmse'), results.get('test_rmse'),
@@ -155,61 +283,82 @@ def suggest_best_model(results_dict):
 def create_scatter_plot(y_true, y_pred, model_name, property_name, metrics, ax=None,
                         overfitting_flag=False, dataset_label="Test Data"):
     """
-    Create a scatter plot of observed vs predicted values
+    Create an observed-vs-predicted scatter plot for ONE split (test or train).
+
+    There is no figure title (the split + model are shown in the GUI selector and
+    the compact top-left legend).  The legend carries the split name, the 1:1 line,
+    the least-squares fit equation, and the split's R² / RMSE.  Layout is
+    constrained so the axis labels never clip when the canvas is resized.
 
     Args:
-        y_true: True values
-        y_pred: Predicted values
-        model_name: Name of the model
-        property_name: Name of the soil property
-        metrics: Dictionary with 'r2' and 'rmse' keys
-        ax: Matplotlib axis (optional)
-        overfitting_flag: If True, annotates the title in red to warn of overfitting
-        dataset_label: Which split is plotted - "Test Data" (default) or
-            "Training Data".  Shown in the title so train/test plots are
-            unambiguous side by side.
+        y_true, y_pred:            observed / predicted values for this split.
+        model_name, property_name: labels (property_name is used on the axes).
+        metrics:                   dict with 'r2' and 'rmse'.
+        ax:                        optional axis to draw into.
+        overfitting_flag:          outline the legend in red when True.
+        dataset_label:             "Test Data" (default) or "Training Data".
 
     Returns:
-        fig, ax if ax is None, otherwise None
+        (fig, ax) when *ax* is None, else None.
     """
+    from matplotlib.lines import Line2D
+
     if ax is None:
-        # Build a standalone Figure (not registered with pyplot's global state)
-        # so batch runs that retain many plots for the GUI don't trip the
-        # "More than 20 figures" warning or leak figures via pyplot.
-        fig = Figure(figsize=(8, 8))
+        # Standalone Figure (off pyplot's registry); constrained layout re-fits
+        # margins on every draw so labels survive GUI resizing.
+        fig = Figure(figsize=(6.4, 6.4), constrained_layout=True)
         ax = fig.add_subplot(111)
         return_fig = True
     else:
+        fig = ax.get_figure()
         return_fig = False
 
-    # Scatter plot
-    ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k', s=50)
-    
-    # 1:1 line
-    min_val = min(y_true.min(), y_pred.min())
-    max_val = max(y_true.max(), y_pred.max())
-    ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2, label='1:1 line')
-    
-    # Labels and title
-    ax.set_xlabel(f'Observed {property_name}', fontsize=12, fontweight='bold')
-    ax.set_ylabel(f'Predicted {property_name}', fontsize=12, fontweight='bold')
-    title = (f'{model_name} - {property_name} ({dataset_label})\n'
-             f'R² = {metrics["r2"]:.3f}, RMSE = {metrics["rmse"]:.3f}')
-    if overfitting_flag:
-        title += '\n⚠ Overfitting Detected'
-        ax.set_title(title, fontsize=14, fontweight='bold', color='red')
-    else:
-        ax.set_title(title, fontsize=14, fontweight='bold')
-    
-    # Grid
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    y_pred = np.asarray(y_pred, dtype=float).ravel()
+
+    is_train = dataset_label == "Training Data"
+    series = "Train" if is_train else "Test"
+    color = '#f0a202' if is_train else '#2c7fb8'
+    marker = '^' if is_train else 'o'
+    ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k', s=42, c=color,
+               marker=marker, label=series, zorder=3)
+
+    lo = float(min(y_true.min(), y_pred.min()))
+    hi = float(max(y_true.max(), y_pred.max()))
+    pad = 0.03 * ((hi - lo) or 1.0)
+    lo -= pad
+    hi += pad
+
+    ax.plot([lo, hi], [lo, hi], 'r--', lw=1.6, label='1:1 line', zorder=1)
+    try:
+        a, b = np.polyfit(y_true, y_pred, 1)
+        xs = np.array([lo, hi])
+        ax.plot(xs, a * xs + b, color='#1a9850', lw=1.6,
+                label=f"Fit: y = {a:.3f}x {b:+.3f}", zorder=2)
+    except Exception:  # noqa: BLE001
+        pass
+
+    metric_rows = [f"R² = {metrics['r2']:.3f}", f"RMSE = {metrics['rmse']:.3f}"]
+    text_handles = [Line2D([], [], linestyle='none', marker='', label=t)
+                    for t in metric_rows]
+
+    ax.set_xlabel(f'Observed {property_name}', fontsize=10, fontweight='bold')
+    ax.set_ylabel(f'Predicted {property_name}', fontsize=10, fontweight='bold')
     ax.grid(True, alpha=0.3)
-    ax.legend()
-    
-    # Equal aspect ratio
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
     ax.set_aspect('equal', adjustable='box')
+    ax.tick_params(labelsize=9)
+
+    handles, labels = ax.get_legend_handles_labels()
+    handles += text_handles
+    labels += [h.get_label() for h in text_handles]
+    leg = ax.legend(handles, labels, loc='upper left', fontsize=8, framealpha=0.9,
+                    handlelength=1.4, labelspacing=0.3, borderpad=0.4)
+    if overfitting_flag and leg is not None:
+        leg.get_frame().set_edgecolor('red')
 
     if return_fig:
-        fig.tight_layout()
         return fig, ax
     return None
 
@@ -269,7 +418,9 @@ def create_reflectance_spectra_plot(X, wavelengths, sample_names=None, n_samples
     rng = np.random.default_rng(seed)
     idx = np.sort(rng.choice(pool, size=k, replace=False))
 
-    fig = Figure(figsize=(9, 5.5))
+    # constrained_layout re-fits margins on each draw, so the title / axis labels
+    # stay visible when the canvas is resized inside the GUI.
+    fig = Figure(figsize=(9, 5.5), constrained_layout=True)
     ax = fig.add_subplot(111)
 
     # Discrete qualitative colours - a continuous gradient (viridis) makes
@@ -285,20 +436,17 @@ def create_reflectance_spectra_plot(X, wavelengths, sample_names=None, n_samples
             label = f"Sample {int(row) + 1}"
         ax.plot(wl, X[row], color=colors[j], lw=1.4, alpha=0.9, label=label)
 
-    ax.set_xlabel(f"Wavelength ({wavelength_unit})", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Reflectance", fontsize=12, fontweight='bold')
-    ax.set_title(title or f"Reflectance Spectra — {k} random samples",
-                 fontsize=13, fontweight='bold')
+    ax.set_xlabel(f"Wavelength ({wavelength_unit})", fontsize=9)
+    ax.set_ylabel("Reflectance", fontsize=9)
     ax.grid(True, which='major', alpha=0.25, linewidth=0.6)
     ax.margins(x=0.01)
-    ax.tick_params(labelsize=10)
+    ax.tick_params(labelsize=8)
 
-    # Beyond ~20 lines the legend crowds out the plot itself, so drop it and note
-    # the sample count in the title area instead.
+    # Beyond ~20 lines the legend crowds out the plot itself, so drop it.
     if k <= LEGEND_MAX_SPECTRA:
-        ax.legend(fontsize=8, ncol=2, frameon=False, loc='best')
+        ax.legend(fontsize=6, ncol=2, frameon=False, loc='best',
+                  handlelength=1.2, labelspacing=0.3, columnspacing=1.0)
 
-    fig.tight_layout()
     return fig
 
 
@@ -488,14 +636,19 @@ def create_comparison_plots(comparison_df, property_name):
     Returns:
         fig: Matplotlib figure
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # Built with the OO Figure API rather than pyplot: this figure is only
+    # ever saved into a PDF, and a pyplot-managed figure stays in pyplot's
+    # global registry until explicitly closed - a leak in the long-running
+    # QGIS panel, whose caller has no pyplot handle to close it with.
+    fig = Figure(figsize=(14, 10))
+    axes = fig.subplots(2, 2)
     fig.suptitle(f'Model Comparison - {property_name}', fontsize=16, fontweight='bold')
     
     # R² comparison
     ax = axes[0, 0]
     models = comparison_df['Model']
     r2_values = comparison_df['Test_R2']
-    colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(models)))
+    colors = cm.viridis(np.linspace(0.3, 0.9, len(models)))
     ax.barh(models, r2_values, color=colors)
     ax.set_xlabel('Test R²', fontsize=11, fontweight='bold')
     ax.set_title('Test R² Comparison', fontsize=12, fontweight='bold')
@@ -552,5 +705,5 @@ def create_comparison_plots(comparison_df, property_name):
         ax.get_children()[best_idx].set_edgecolor('darkgoldenrod')
         ax.get_children()[best_idx].set_linewidth(2)
     
-    plt.tight_layout()
+    fig.tight_layout()
     return fig

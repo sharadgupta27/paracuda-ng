@@ -77,7 +77,7 @@ def perform_cross_validation(X_scaled, y_scaled, model, cv_strategy, cv_params, 
         )
 
         # Run CV with loky array-memmapping disabled (max_nbytes=None) so no
-        # temp memmap folder is created — avoids the Windows resource_tracker
+        # temp memmap folder is created - avoids the Windows resource_tracker
         # "FileNotFoundError" cleanup warning at shutdown.
         import joblib
         with joblib.parallel_config(max_nbytes=None):
@@ -103,3 +103,25 @@ def perform_cross_validation(X_scaled, y_scaled, model, cv_strategy, cv_params, 
     except Exception as e:
         print(f"Cross-validation error: {str(e)}")
         return [], [], 0.0, 0.0, 0.0, 0.0
+
+
+def cv_derived_metrics(y_original, cv_rmse_mean):
+    """RPD and normalized RMSEP for a cross-validation run.
+
+    ``perform_cross_validation`` returns a fixed 6-tuple that several callers
+    unpack positionally, so these two extra measures are provided separately
+    rather than by widening that signature.
+
+    Args:
+        y_original: the target values on their ORIGINAL scale (not scaled).
+        cv_rmse_mean: mean CV RMSE, already back-transformed to that scale.
+
+    Returns:
+        ``{'cv_rpd': float, 'cv_nrmsep': float}`` - ``nan`` when undefined.
+    """
+    from models.batch_processing import compute_rpd, compute_nrmsep
+
+    return {
+        'cv_rpd': compute_rpd(y_original, rmse=cv_rmse_mean),
+        'cv_nrmsep': compute_nrmsep(y_original, rmse=cv_rmse_mean),
+    }

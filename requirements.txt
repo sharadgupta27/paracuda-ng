@@ -1,16 +1,26 @@
+# Runtime dependencies for the PARACUDA-NG desktop tool.
+#   pip install -r requirements.txt
+# tkinter ships with Python itself and is not listed here.
 numpy
 pandas
+scipy
 scikit-learn
 matplotlib
-rasterio
-spectral
 joblib
-scipy
-pyinstaller
-reportlab
-pillow
 xgboost
 optuna
+rasterio
+spectral
+pillow
+# Spreadsheet engines used by pandas: .xlsx / .xls / .ods respectively.
 openpyxl
 xlrd
 odfpy
+
+# Optional accelerator - not required.  The Rust .xlsx reader behind
+# python-calamine parses a large spectral workbook several times faster than
+# openpyxl; PARACUDA-NG falls back to pandas' default engine without it.
+# python-calamine
+
+# Build-only tooling (PyInstaller for the frozen .exe) is NOT listed here;
+# install it separately when producing a release build.
