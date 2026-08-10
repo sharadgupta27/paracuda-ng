@@ -10,7 +10,7 @@ REM nothing installed:
 REM
 REM   1. If Conda (Miniforge / Miniconda / Anaconda) is present, it
 REM      creates/uses the 'paracuda' Conda environment.
-REM   2. Otherwise it looks for any usable system Python 3.9+.
+REM   2. Otherwise it looks for any usable system Python 3.10+.
 REM   3. If there is no Python at all, it downloads the official
 REM      python.org installer, installs it per-user (no admin rights),
 REM      and continues.
@@ -174,21 +174,28 @@ REM =====================================================================
 echo.
 echo [2/4] Preparing a local virtual environment...
 
-REM Re-use the .venv from a previous run if it is already there.
+REM Re-use the .venv from a previous run if it is already there - but only when
+REM it was built on a Python we still support.  A .venv left behind by an older
+REM release may sit on 3.9, where pip has to compile packages from source.
 if exist "%VENV_DIR%\Scripts\python.exe" (
-    echo Found existing virtual environment: %VENV_DIR%
-    goto :venv_ready
+    call :validate_py "%VENV_DIR%\Scripts\python.exe"
+    if defined PY_OK (
+        echo Found existing virtual environment: %VENV_DIR%
+        goto :venv_ready
+    )
+    echo The existing virtual environment uses an unsupported Python - rebuilding it.
+    rmdir /s /q "%VENV_DIR%"
 )
 
-REM Find any usable Python 3.9+ that also has tkinter.
+REM Find any usable Python 3.10+ that also has tkinter.
 call :find_system_python
 if not defined SYS_PY (
-    echo No suitable Python 3.9+ installation was found on this computer.
+    echo No suitable Python 3.10+ installation was found on this computer.
     call :install_python
     if not defined SYS_PY (
         echo.
         echo ERROR: Python could not be installed automatically.
-        echo Please install Python 3.9 or newer from https://www.python.org/downloads/
+        echo Please install Python 3.10 or newer from https://www.python.org/downloads/
         echo and make sure to tick "tcl/tk and IDLE" during the installation.
         echo.
         echo Press any key to exit...
@@ -240,11 +247,19 @@ if errorlevel 1 (
     echo This may take several minutes...
     echo.
     "%PY_EXE%" -m pip install --upgrade pip
-    "%PY_EXE%" -m pip install -r requirements.txt
+    REM --prefer-binary: take a slightly older release that ships a wheel rather
+    REM than compile the newest one from source, which would need Visual C++.
+    "%PY_EXE%" -m pip install --prefer-binary -r requirements.txt
     if errorlevel 1 (
         echo.
         echo ERROR: Failed to install required packages!
         echo Please check your internet connection and try again.
+        echo.
+        echo If the messages above ask for Microsoft Visual C++ 14.0 or greater,
+        echo pip had to build a package from source because no ready-made wheel
+        echo matched this Python.  Delete the .venv folder next to this file and
+        echo run the launcher again - it will rebuild on a supported Python
+        echo version instead of compiling anything.
         echo.
         echo Press any key to exit...
         pause > nul
@@ -299,7 +314,7 @@ REM =====================================================================
 
 REM ---------------------------------------------------------------------
 REM :validate_py <path-to-python.exe>
-REM Sets PY_OK=1 when the interpreter exists, is 3.9+ and has tkinter.
+REM Sets PY_OK=1 when the interpreter exists, is 3.10+ and has tkinter.
 REM ---------------------------------------------------------------------
 :validate_py
 set "PY_OK="
@@ -307,7 +322,10 @@ if "%~1"=="" goto :eof
 if not exist "%~1" goto :eof
 REM Skip the Microsoft Store "app execution alias" stub - it is not a real Python.
 echo %~1 | find /i "WindowsApps" >nul && goto :eof
-"%~1" -c "import sys, tkinter; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
+REM 3.10 is the floor, not 3.9: several dependencies (greenlet, pulled in by
+REM optuna -> SQLAlchemy) stopped publishing cp39 wheels, so pip on 3.9 falls
+REM back to building from source and fails without a C++ compiler.
+"%~1" -c "import sys, tkinter; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
 if not errorlevel 1 set "PY_OK=1"
 goto :eof
 
