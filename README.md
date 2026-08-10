@@ -107,23 +107,36 @@ PARACUDA-NG is organized into focused packages:
 
 ## Quick Start (One-Click Launcher)
 
-If you're not comfortable installing packages or running scripts from a terminal, just
-use the included launcher - **double-click `run_paracuda.bat`**. It automatically:
+If you're not comfortable installing packages or running scripts from a terminal, use the
+included launcher - **`run_paracuda.bat` on Windows**, **`run_paracuda.sh` on Linux and
+macOS**. Both do the same thing:
 
-1. Finds your Conda installation (Miniforge, Miniconda, or Anaconda) and creates the
+1. Find your Conda installation (Miniforge, Miniconda, or Anaconda) and create the
    `paracuda` environment in it, on Python 3.14
-2. If there is no Conda, falls back to any Python 3.10+ already on the computer and builds
+2. If there is no Conda, fall back to any Python 3.10+ already on the computer and build
    a local `.venv` next to the launcher instead
-3. If there is no Python at all, downloads the official python.org installer for the same
-   3.14 series and installs it for the current user only (no administrator rights, into
-   `%LOCALAPPDATA%\Programs\PARACUDA-Python`), then builds the `.venv`
-4. Installs everything from `requirements.txt` the first time you run it (this one-time
+3. If there is no usable Python at all, install one for the current user only - no
+   administrator rights, nothing outside your own account is touched. Windows downloads
+   the official python.org installer for the same 3.14 series into
+   `%LOCALAPPDATA%\Programs\PARACUDA-Python`; Linux and macOS download Miniforge into
+   `~/miniforge3`, since there is no equivalent python.org installer there
+4. Install everything from `requirements.txt` the first time you run it (this one-time
    setup takes a few minutes)
-5. Launches PARACUDA-NG
+5. Launch PARACUDA-NG
+
+On Linux and macOS the script needs the executable bit once, then it can be run from a
+terminal or double-clicked (choose *Run in Terminal* if your file manager asks):
+
+```bash
+chmod +x run_paracuda.sh
+./run_paracuda.sh
+```
 
 There is no prerequisite - a machine with nothing installed works. The only thing needed
 for the first run is an internet connection. If setup fails, the launcher prints clear
-guidance and stays open so you can read the message.
+guidance and stays open so you can read the message. On Debian and Ubuntu, where a system
+Python is present but `tkinter` or `venv` is packaged separately, it names the exact
+`sudo apt install` line to run rather than downloading anything.
 
 ## Installation (Manual)
 
