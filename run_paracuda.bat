@@ -30,17 +30,18 @@ set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
 REM ---- Configuration --------------------------------------------------
-REM Name of the Conda environment to create / use, and the Python version
-REM used when creating it.  Change these two lines if you want a different
-REM environment name or Python version.
+REM Both setup paths target the same Python series, 3.14: the Conda
+REM environment is created with it and the python.org fallback installs it,
+REM so every machine ends up running PARACUDA-NG on the same interpreter.
+REM The supported floor is 3.10 - see :validate_py for why.
 set "ENV_NAME=paracuda"
 set "PY_VERSION=3.14"
 
 REM Used only when NO Conda is available: the local virtual environment
 REM folder, plus the Python version/location installed when the machine
-REM has no Python at all.
+REM has no Python at all.  Keep PY_INSTALL_VER on the PY_VERSION series.
 set "VENV_DIR=%SCRIPT_DIR%.venv"
-set "PY_INSTALL_VER=3.12.10"
+set "PY_INSTALL_VER=3.14.7"
 set "PY_TARGET=%LOCALAPPDATA%\Programs\PARACUDA-Python"
 REM ---------------------------------------------------------------------
 

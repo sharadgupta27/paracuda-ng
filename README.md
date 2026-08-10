@@ -111,11 +111,11 @@ If you're not comfortable installing packages or running scripts from a terminal
 use the included launcher - **double-click `run_paracuda.bat`**. It automatically:
 
 1. Finds your Conda installation (Miniforge, Miniconda, or Anaconda) and creates the
-   `paracuda` environment in it
+   `paracuda` environment in it, on Python 3.14
 2. If there is no Conda, falls back to any Python 3.10+ already on the computer and builds
    a local `.venv` next to the launcher instead
-3. If there is no Python at all, downloads the official python.org installer and installs
-   it for the current user only (no administrator rights, into
+3. If there is no Python at all, downloads the official python.org installer for the same
+   3.14 series and installs it for the current user only (no administrator rights, into
    `%LOCALAPPDATA%\Programs\PARACUDA-Python`), then builds the `.venv`
 4. Installs everything from `requirements.txt` the first time you run it (this one-time
    setup takes a few minutes)
