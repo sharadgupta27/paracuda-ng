@@ -7,6 +7,7 @@ This file keeps the constructor and the window-lifecycle helpers for the
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 from gui.menu_help_mixin import MenuHelpMixin
 from gui.layout_mixin import LayoutMixin
@@ -525,46 +526,37 @@ class Paracuda(MenuHelpMixin, LayoutMixin, UIFlowMixin,
         """Proper cleanup when closing the window"""
         # Flag closing FIRST so self-rescheduling polls/refreshes stop looping.
         self._closing = True
-        try:
-            # Cancel the datetime update callback if it exists
+        with contextlib.suppress(Exception):
             if hasattr(self, '_datetime_after_id') and self._datetime_after_id:
                 self.after_cancel(self._datetime_after_id)
                 self._datetime_after_id = None
-        except Exception:
-            pass
         # Cancel the flow-chart poll/refresh after-jobs (avoids "invalid command
         # name ..._flow_poll" errors when a pending job fires post-destroy).
-        try:
+        with contextlib.suppress(Exception):
             if hasattr(self, 'cancel_flow_jobs'):
                 self.cancel_flow_jobs()
-        except Exception:
-            pass
         # Shut the joblib/loky worker pool down cleanly before the interpreter
         # exits, so its temp memmap folders are removed in-process instead of
         # racing the resource_tracker at shutdown (a benign but noisy Windows
         # "FileNotFoundError" warning otherwise).
-        try:
+        with contextlib.suppress(Exception):
             from joblib.externals.loky import get_reusable_executor
             get_reusable_executor().shutdown(wait=True)
-        except Exception:
-            pass
 
         # Close any matplotlib figures while the Tk interpreter is still alive, so
         # their canvases/PhotoImages are released now instead of by the GC after
         # teardown (which prints "main thread is not in main loop").  Only if
         # pyplot was actually imported - don't force the heavy import on exit.
-        try:
+        with contextlib.suppress(Exception):
             import sys
             if 'matplotlib.pyplot' in sys.modules:
                 sys.modules['matplotlib.pyplot'].close('all')
-        except Exception:
-            pass
 
         # Destroy the window
         self.destroy()
     
     def update_datetime(self):
-        try:
+        with contextlib.suppress(tk.TclError):
             if not self.winfo_exists():
                 return
             current_time = datetime.now().strftime("%d-%b-%Y %H:%M:%S")
@@ -572,9 +564,6 @@ class Paracuda(MenuHelpMixin, LayoutMixin, UIFlowMixin,
             self.datetime_label.config(text=f"{current_time} | {computer_name}")
             # Store the after callback ID so we can cancel it later
             self._datetime_after_id = self.after(1000, self.update_datetime)
-        except tk.TclError:
-            # Widget was destroyed, stop the callback
-            pass
 
     def _open_data_converter(self):
         """Open the PARACUDA-NG Data Converter in a separate window."""
@@ -589,8 +578,10 @@ class Paracuda(MenuHelpMixin, LayoutMixin, UIFlowMixin,
         # Launched with -m from the repo root rather than by file path, so the
         # converter's own ``utils.*`` / ``paracuda_theme`` imports resolve without
         # the module having to patch sys.path at import time.
-        import subprocess, sys
+        import subprocess, sys  # nosec B404 - fixed argv below, never a shell
         repo_root = os.path.dirname(os.path.dirname(__file__))
-        subprocess.Popen(
+        # nosec B603 - argv is this interpreter plus two string literals; no
+        # shell, and nothing here comes from user input.
+        subprocess.Popen(  # nosec B603
             [sys.executable, "-m", "utils.data_converter"], cwd=repo_root
         )

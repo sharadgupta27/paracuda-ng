@@ -29,6 +29,7 @@ Wavelength units
 @author: Sharad Kumar Gupta
 """
 
+import contextlib
 import os
 import queue
 import re
@@ -50,6 +51,21 @@ except Exception:  # pragma: no cover - Tk-free (e.g. QGIS) environment
 
 import numpy as np
 import pandas as pd
+
+# A workbook's internal XML comes from a file the user picked, so it is parsed
+# with defusedxml, which rejects the entity declarations behind "billion
+# laughs" expansion.  The stdlib xml.etree expands them, so a hand-crafted
+# .xlsx could exhaust memory while merely being previewed.  The dependency is
+# optional: without it the fast reader below steps aside via _NotAPlainGrid and
+# pandas/openpyxl reads the workbook instead, which is the same fallback used
+# for any workbook the fast path cannot handle.
+try:
+    from defusedxml.ElementTree import fromstring as _xml_fromstring
+    from defusedxml.ElementTree import iterparse as _xml_iterparse
+    _HAS_DEFUSEDXML = True
+except Exception:  # pragma: no cover - defusedxml not installed
+    _xml_fromstring = _xml_iterparse = None
+    _HAS_DEFUSEDXML = False
 
 from utils.window_icon import apply_icon, set_app_user_model_id
 
@@ -150,12 +166,10 @@ def detect_wavelength_columns(df):
     """Return list of column names whose HEADER value looks like a wavelength."""
     result = []
     for col in df.columns:
-        try:
+        with contextlib.suppress((ValueError, TypeError)):
             v = float(str(col))
             if _is_wavelength_value(v):
                 result.append(col)
-        except (ValueError, TypeError):
-            pass
     return result
 
 
@@ -183,10 +197,8 @@ def detect_orientation(df):
     if len(wl_cols) >= 5:
         wl_vals = []
         for c in wl_cols:
-            try:
+            with contextlib.suppress((ValueError, TypeError)):
                 wl_vals.append(float(str(c)))
-            except (ValueError, TypeError):
-                pass
         notes.append(
             "Row-wise layout detected: %d wavelength columns found (%.0f - %.0f)."
             % (len(wl_cols), min(wl_vals), max(wl_vals))
@@ -456,10 +468,8 @@ def convert_to_paracuda(df, orientation, wl_cols, name_col,
     # =========================================================================
     wl_floats = []
     for c in wl_cols:
-        try:
+        with contextlib.suppress((ValueError, TypeError)):
             wl_floats.append(float(str(c)))
-        except (ValueError, TypeError):
-            pass
 
     row_wise_um = (
         len(wl_floats) >= 5
@@ -468,12 +478,10 @@ def convert_to_paracuda(df, orientation, wl_cols, name_col,
     if row_wise_um:
         col_rename = {}
         for old_c in df.columns:
-            try:
+            with contextlib.suppress((ValueError, TypeError)):
                 v = float(str(old_c))
                 if _UM_MIN < v <= _UM_MAX:
                     col_rename[old_c] = round(v * 1000, 1)
-            except (ValueError, TypeError):
-                pass
         if col_rename:
             df      = df.rename(columns=col_rename)
             wl_cols = [col_rename.get(c, c) for c in wl_cols]
@@ -584,10 +592,8 @@ def _col_index(ref):
 
 def _xlsx_date_style_indices(zf):
     """Style indices whose number format renders as a date or a time."""
-    from xml.etree.ElementTree import fromstring
-
     try:
-        styles = fromstring(zf.read('xl/styles.xml'))
+        styles = _xml_fromstring(zf.read('xl/styles.xml'))
     except Exception:
         # No styles part at all - nothing can be date-formatted.
         return set()
@@ -598,10 +604,8 @@ def _xlsx_date_style_indices(zf):
         # date tokens, so "0.00\"m\"" is not mistaken for a month.
         bare = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', '', code)
         if re.search(r'[ymdhs]', bare, re.IGNORECASE):
-            try:
+            with contextlib.suppress((TypeError, ValueError)):
                 custom_dates.add(int(fmt.get('numFmtId')))
-            except (TypeError, ValueError):
-                pass
     date_styles = set()
     cell_xfs = styles.find(_XL_NS + 'cellXfs')
     if cell_xfs is None:
@@ -621,11 +625,9 @@ _REL_NS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}
 
 def _xlsx_sheet_part(zf, sheet):
     """Zip path of the worksheet XML for ``sheet`` (name, index or None)."""
-    from xml.etree.ElementTree import fromstring
-
     try:
-        book = fromstring(zf.read('xl/workbook.xml'))
-        rels = fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+        book = _xml_fromstring(zf.read('xl/workbook.xml'))
+        rels = _xml_fromstring(zf.read('xl/_rels/workbook.xml.rels'))
     except Exception:
         raise _NotAPlainGrid("workbook parts unreadable")
 
@@ -664,8 +666,13 @@ def _read_xlsx_fast(path, sheet=None, progress=None):
     pandas rather than trust this reader.
     """
     import zipfile
-    from xml.etree.ElementTree import iterparse
 
+    if not _HAS_DEFUSEDXML:
+        # Without a hardened parser this reader will not touch workbook XML;
+        # pandas/openpyxl handles the file instead.
+        raise _NotAPlainGrid("defusedxml not installed")
+
+    iterparse = _xml_iterparse
     with zipfile.ZipFile(path) as zf:
         names = set(zf.namelist())
         if 'xl/workbook.xml' not in names:
@@ -690,6 +697,9 @@ def _read_xlsx_fast(path, sheet=None, progress=None):
         total_rows = 0
         rows = []
         width = 0
+        # Rows carrying no <c> children at all are held here rather than
+        # emitted straight away - see the flush below.
+        pending_blank = 0
         with zf.open(part) as fh:
             for _event, el in iterparse(fh, ('end',)):
                 tag = el.tag
@@ -718,11 +728,9 @@ def _read_xlsx_fast(path, sheet=None, progress=None):
                     style = c.get('s')
                     ctype = c.get('t')
                     if style is not None and date_styles:
-                        try:
+                        with contextlib.suppress(ValueError):
                             if int(style) in date_styles:
                                 raise _NotAPlainGrid("date-formatted cells")
-                        except ValueError:
-                            pass
                     if ctype == 'inlineStr':
                         is_el = c.find(_XL_NS + 'is')
                         values.append('' if is_el is None else ''.join(
@@ -755,6 +763,16 @@ def _read_xlsx_fast(path, sheet=None, progress=None):
                     else:                             # 'str' (cached formula)
                         values.append(text)
                 el.clear()
+                if not values:
+                    # No <c> children, so the row holds nothing.  A blank row
+                    # *between* data is real and pandas keeps it, but a run of
+                    # them at the bottom of the sheet is a writer artifact that
+                    # pandas drops - so defer and only emit if data follows.
+                    pending_blank += 1
+                    continue
+                if pending_blank:
+                    rows.extend([] for _ in range(pending_blank))
+                    pending_blank = 0
                 rows.append(values)
                 width = max(width, len(values))
                 if len(rows) % 250 == 0:
@@ -791,10 +809,8 @@ def _frame_from_cells(rows):
     try:
         return parser.read()
     finally:
-        try:
+        with contextlib.suppress(Exception):
             parser.close()
-        except Exception:
-            pass
 
 
 def _report(progress, fraction, message):
@@ -806,10 +822,8 @@ def _report(progress, fraction, message):
     """
     if progress is None:
         return
-    try:
+    with contextlib.suppress(Exception):
         progress(fraction, message)
-    except Exception:
-        pass
 
 
 def _read_csv_with_progress(path, encoding, progress):
@@ -868,20 +882,17 @@ def load_file(path, sheet=None, progress=None):
         engine = _fastest_excel_engine(ext)
         if engine:
             _report(progress, None, 'Reading spreadsheet (fast reader)…')
-            try:
+            with contextlib.suppress(Exception):
                 return pd.read_excel(path, engine=engine, **kwargs)
-            except Exception:
-                pass  # Older pandas, or a file calamine cannot handle.
 
         # 2. The built-in streaming reader for plain .xlsx/.xlsm grids: about
         #    2.5x faster than openpyxl, and it can report real progress.
         if ext in ('.xlsx', '.xlsm'):
-            try:
+            # _NotAPlainGrid means dates or an odd layout, which pandas handles
+            # properly; any other error must not break a load pandas could do
+            # on its own.  Either way the fall-through below is the answer.
+            with contextlib.suppress(Exception):
                 return _read_xlsx_fast(path, sheet=sheet, progress=progress)
-            except _NotAPlainGrid:
-                pass  # Dates, an odd layout - pandas handles it properly.
-            except Exception:
-                pass  # Never let the fast path break a load pandas could do.
 
         # 3. pandas' own reader.
         _report(progress, None, 'Reading spreadsheet…')
@@ -905,7 +916,7 @@ def get_sheet_names(path):
     if ext not in _EXCEL_EXTS:
         return ['Sheet1']
     if ext in ('.xlsx', '.xlsm'):
-        try:
+        with contextlib.suppress(Exception):
             import zipfile
             with zipfile.ZipFile(path) as zf:
                 book = zf.read('xl/workbook.xml').decode('utf-8', 'replace')
@@ -915,16 +926,12 @@ def get_sheet_names(path):
                 return [n.replace('&amp;', '&').replace('&lt;', '<')
                          .replace('&gt;', '>').replace('&quot;', '"')
                          .replace('&apos;', "'") for n in names]
-        except Exception:
-            pass  # Not a readable zip - fall back to pandas.
     xl = pd.ExcelFile(path)
     try:
         return list(xl.sheet_names)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             xl.close()
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1011,11 +1018,9 @@ class _LoadProgress:
         self._win.title(title)
         self._win.resizable(False, False)
         self._win.configure(background=_C_WIN)
-        try:
+        with contextlib.suppress(Exception):
             self._win.transient(parent)
             self._win.grab_set()
-        except Exception:
-            pass
         # No close button: the load owns the window's lifetime.
         self._win.protocol("WM_DELETE_WINDOW", lambda: None)
 
@@ -1029,12 +1034,10 @@ class _LoadProgress:
         self._indeterminate = True
 
         self._win.update_idletasks()
-        try:
+        with contextlib.suppress(Exception):
             x = parent.winfo_rootx() + (parent.winfo_width() - self._win.winfo_width()) // 2
             y = parent.winfo_rooty() + (parent.winfo_height() - self._win.winfo_height()) // 3
             self._win.geometry('+%d+%d' % (max(0, x), max(0, y)))
-        except Exception:
-            pass
 
     def update(self, fraction, message):
         """Progress update, safe to call from the worker thread (no Tk here)."""
@@ -1052,24 +1055,20 @@ class _LoadProgress:
     def _pump(self):
         self._pump_id = None
         done = None
-        try:
+        with contextlib.suppress(queue.Empty):
             while True:
                 kind, a, b = self._queue.get_nowait()
                 if kind == 'done':
                     done = (a,)
                 else:
                     self._apply(a, b)
-        except queue.Empty:
-            pass
         if done is not None:
             self.close()
             if self._on_done is not None:
                 self._on_done(done[0])
             return
-        try:
+        with contextlib.suppress(Exception):
             self._pump_id = self._parent.after(self.POLL_MS, self._pump)
-        except Exception:
-            pass
 
     def _apply(self, fraction, message):
         if not self._win.winfo_exists():
@@ -1091,20 +1090,14 @@ class _LoadProgress:
 
     def close(self):
         if self._pump_id is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._parent.after_cancel(self._pump_id)
-            except Exception:
-                pass
             self._pump_id = None
-        try:
+        with contextlib.suppress(Exception):
             self._bar.stop()
             self._win.grab_release()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self._win.destroy()
-        except Exception:
-            pass
 
 
 class ParacudaConverter(_TkBase):
@@ -1796,19 +1789,15 @@ class ParacudaConverter(_TkBase):
         # per-column view would be meaningless; summarise the transpose instead.
         wl_cols = [str(c) for c in detect_wavelength_columns(df)]
         orientation = None
-        try:
+        with contextlib.suppress(Exception):
             orientation = detect_orientation(df)[0]
-        except Exception:
-            pass
         if orientation == 'col-wise':
-            try:
+            with contextlib.suppress(Exception):
                 idx = df.columns[0]
                 is_wl_row = df[idx].apply(_is_wavelength_value)
                 props = df[~is_wl_row].set_index(idx).T
                 props = props.apply(pd.to_numeric, errors='coerce')
                 df, wl_cols = props, []
-            except Exception:
-                pass
 
         columns = suggest_numeric_columns(df, wl_cols)
         if not columns:
@@ -1822,10 +1811,8 @@ class ParacudaConverter(_TkBase):
         win = tk.Toplevel(self)
         win.title("Data Distribution - before conversion")
         win.geometry("1060x780")
-        try:
+        with contextlib.suppress(Exception):
             win.transient(self)
-        except Exception:
-            pass
 
         tk.Label(win, text='Property distributions in the loaded file',
                  font=(_FONT, 13, 'bold'), background=_C_WIN,
@@ -2090,10 +2077,8 @@ class ParacudaConverter(_TkBase):
         # Wavelength range combos
         wl_numeric = []
         for c in wl_cols:
-            try:
+            with contextlib.suppress((ValueError, TypeError)):
                 wl_numeric.append(float(str(c)))
-            except (ValueError, TypeError):
-                pass
         if wl_numeric:
             wl_strs = [str(int(v)) if v == int(v) else str(v)
                        for v in sorted(wl_numeric)]

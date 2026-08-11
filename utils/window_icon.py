@@ -15,6 +15,7 @@ ahead of ``tk.Tk.__init__``.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 import os
 import sys
 
@@ -35,12 +36,10 @@ def set_app_user_model_id(app_id=APP_ID):
     """
     if not sys.platform.startswith("win"):
         return
-    try:
+    with contextlib.suppress(Exception):
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
-    except Exception:
-        pass
 
 
 def icon_path():
@@ -64,7 +63,5 @@ def apply_icon(window):
     try:
         window.iconbitmap(default=path)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             window.iconbitmap(path)
-        except Exception:
-            pass

@@ -3,6 +3,7 @@ Main window layout, parameter widgets and their change callbacks.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
@@ -45,10 +46,8 @@ class LayoutMixin:
         def _set_sash(event, _fired=[False]):
             if not _fired[0]:
                 _fired[0] = True
-                try:
+                with contextlib.suppress(Exception):
                     main_paned.sashpos(0, 780)
-                except Exception:
-                    pass
         main_paned.bind("<Configure>", _set_sash)
 
         # Title / clock header above the wizard
@@ -754,10 +753,8 @@ class LayoutMixin:
         def _set_vsash(event, _fired=[False]):
             if not _fired[0] and left_split.winfo_height() > 300:
                 _fired[0] = True
-                try:
+                with contextlib.suppress(Exception):
                     left_split.sashpos(0, left_split.winfo_height() - 210)
-                except Exception:
-                    pass
         left_split.bind("<Configure>", _set_vsash)
 
         # ========== RIGHT PANEL: DISPLAY AREA ==========
@@ -1115,16 +1112,12 @@ class LayoutMixin:
 
         def leave(_event=None):
             if state['after'] is not None:
-                try:
+                with contextlib.suppress(Exception):
                     widget.after_cancel(state['after'])
-                except Exception:
-                    pass
                 state['after'] = None
             if state['win'] is not None:
-                try:
+                with contextlib.suppress(Exception):
                     state['win'].destroy()
-                except Exception:
-                    pass
                 state['win'] = None
 
         widget.bind("<Enter>", enter, add="+")

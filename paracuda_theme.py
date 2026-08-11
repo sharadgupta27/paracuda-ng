@@ -21,6 +21,7 @@ converter is copied out on its own) the caller keeps its old hardcoded look.
 @author: Sharad Kumar Gupta
 """
 
+import contextlib
 import json
 import os
 # NOTE: ``tkinter`` is imported lazily inside ``apply_ttk_theme`` (the only user of
@@ -133,13 +134,11 @@ def _settings_path():
 
 def load_theme_name():
     """Return the persisted theme name, or the default if none/invalid."""
-    try:
+    with contextlib.suppress(Exception):
         with open(_settings_path(), "r", encoding="utf-8") as fh:
             name = json.load(fh).get("theme")
         if name in PALETTES:
             return name
-    except Exception:
-        pass
     return DEFAULT_THEME
 
 
@@ -147,7 +146,7 @@ def save_theme_name(name):
     """Persist *name* as the active theme (best-effort, never raises)."""
     if name not in PALETTES:
         return
-    try:
+    with contextlib.suppress(Exception):
         path = _settings_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         data = {}
@@ -160,8 +159,6 @@ def save_theme_name(name):
         data["theme"] = name
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -186,10 +183,8 @@ def apply_ttk_theme(root, palette=None):
     FS = (FONT, 9)
 
     st = ttk.Style(root)
-    try:
+    with contextlib.suppress(Exception):
         st.theme_use("clam")
-    except Exception:
-        pass
 
     # Propagate default font / bg to plain (non-ttk) widgets.
     root.option_add("*Font", FN)

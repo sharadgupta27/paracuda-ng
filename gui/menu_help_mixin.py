@@ -3,6 +3,7 @@ Menu bar, Help window, About dialog and info popups.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
@@ -193,34 +194,24 @@ class MenuHelpMixin:
         save_theme_name(name)
 
         # Repaint tk (non-ttk) widgets that carry an explicit background.
-        try:
+        with contextlib.suppress(Exception):
             self.configure(bg=self._c('WIN'))
-        except Exception:
-            pass
         for attr in ('params_canvas',):
             w = getattr(self, attr, None)
             if w is not None:
-                try:
+                with contextlib.suppress(Exception):
                     w.configure(bg=self._c('WIN'))
-                except Exception:
-                    pass
         # Every wizard-step scroll canvas.
-        try:
+        with contextlib.suppress(Exception):
             for canv in self._scroll_canvases:
                 canv.configure(bg=self._c('WIN'))
-        except Exception:
-            pass
         if hasattr(self, 'status_text'):
-            try:
+            with contextlib.suppress(Exception):
                 self.status_text.configure(bg=self._c('BNR'))
-            except Exception:
-                pass
         # Redraw the process-flow preview with the new palette colours.
         if hasattr(self, 'refresh_flow_preview'):
-            try:
+            with contextlib.suppress(Exception):
                 self.refresh_flow_preview()
-            except Exception:
-                pass
         # Let the user know the converter updates on next open.
         if hasattr(self, 'status_text'):
             self.status_text.insert(

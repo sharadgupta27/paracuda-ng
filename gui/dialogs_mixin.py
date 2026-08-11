@@ -3,6 +3,7 @@ Data Distribution, Check Spectral Integrity and Spectral Harmonization dialogs.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
@@ -40,10 +41,8 @@ class DialogsMixin:
         win.title("Data Distribution")
         win.geometry("1060x780")
         win.resizable(True, True)
-        try:
+        with contextlib.suppress(Exception):
             win.transient(self)
-        except Exception:
-            pass
 
         header = ttk.Frame(win, padding=(10, 8, 10, 0))
         header.pack(fill="x")
@@ -103,11 +102,9 @@ class DialogsMixin:
         report.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         report.pack(side="left", fill="both", expand=True)
-        try:
+        with contextlib.suppress(Exception):
             report.configure(bg=self._c('BNR'), fg=self._c('TXT'),
                              insertbackground=self._c('TXT'))
-        except Exception:
-            pass
 
         verdict_lbl = ttk.Label(win, text="", font=('Helvetica', 10, 'bold'))
         verdict_lbl.pack(anchor="w", padx=12, pady=(0, 4))
@@ -659,12 +656,10 @@ class DialogsMixin:
         def _extract_spectra(df):
             wl_cols = []
             for col in df.columns:
-                try:
+                with contextlib.suppress((ValueError, TypeError)):
                     val = float(col)
                     if 0.3 <= val <= 20000:
                         wl_cols.append(col)
-                except (ValueError, TypeError):
-                    pass
             return df[wl_cols].values.astype(float), [float(c) for c in wl_cols]
 
         def _is_numeric_col(col, lo, hi):

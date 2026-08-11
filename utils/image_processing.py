@@ -10,6 +10,7 @@ spectral-free header derived from the input.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 import os
 import re
 
@@ -112,6 +113,8 @@ def _spectral_from_dataset(src):
         try:
             tags = src.tags(ns=ns) if ns else src.tags()
         except Exception:
+            tags = None
+        if not tags:
             continue
         wl = tags.get('wavelength') or tags.get('Wavelength')
         if wl:
@@ -143,16 +146,16 @@ def _gain_offset_from_dataset(src):
     text.  Returns ``(None, None)`` when the dataset carries no scaling (gain 1,
     offset 0 everywhere) - the overwhelmingly common case for GeoTIFF.
     """
-    try:
+    with contextlib.suppress(Exception):
         scales, offsets = list(src.scales), list(src.offsets)
         if any(s != 1.0 for s in scales) or any(o != 0.0 for o in offsets):
             return scales, offsets
-    except Exception:
-        pass
     for ns in ('ENVI', None):
         try:
             tags = src.tags(ns=ns) if ns else src.tags()
         except Exception:
+            tags = None
+        if not tags:
             continue
         gain = _num_list(tags.get('data gain values') or tags.get('data_gain_values'))
         if gain:
@@ -536,10 +539,8 @@ def save_prediction_image(predictions, original_shape, image_meta, file_path,
         with rasterio.open(file_path, 'w', **profile) as dst:
             dst.write(raster, 1)
             if band_name:
-                try:
+                with contextlib.suppress(Exception):
                     dst.set_band_description(1, str(band_name))
-                except Exception:
-                    pass
 
         return prediction_image
 
@@ -637,10 +638,8 @@ def save_cube_image(cube, original_shape, wavelengths, fwhms, image_meta,
             dst.write(stack)
             if wl is not None:
                 for b in range(n_bands):
-                    try:
+                    with contextlib.suppress(Exception):
                         dst.set_band_description(b + 1, f"{wl[b]:.3f} nm")
-                    except Exception:
-                        pass
         return stack
 
     except Exception as e:

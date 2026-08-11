@@ -3,6 +3,7 @@ Threading/UI-thread helpers, status/progress, plot list handling.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
@@ -52,10 +53,8 @@ class UIFlowMixin:
         # so re-entrancy from this update() is prevented.
         while not done.is_set():
             if _on_poll is not None:
-                try:
+                with contextlib.suppress(Exception):  # noqa: BLE001 - progress must never fail a load
                     _on_poll()
-                except Exception:  # noqa: BLE001 - progress must never fail a load
-                    pass
             try:
                 self.update()
             except tk.TclError:
@@ -79,10 +78,8 @@ class UIFlowMixin:
         locked = getattr(self, '_locked_geometry', None)
         self._locked_geometry = None
         if locked:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.geometry(locked)
-            except tk.TclError:
-                pass
 
     def append_status(self, message, see=True):
         def _append():
@@ -99,13 +96,11 @@ class UIFlowMixin:
         No-op when the tab is already in front.
         """
         def _select():
-            try:
+            with contextlib.suppress(tk.TclError):
                 nb = getattr(self, 'display_notebook', None)
                 tab = getattr(self, 'status_tab', None)
                 if nb is not None and tab is not None:
                     nb.select(tab)
-            except tk.TclError:
-                pass
         self._run_on_ui(_select)
 
     def set_busy_state(self, busy):
@@ -386,10 +381,8 @@ class UIFlowMixin:
                 # Keep the window from auto-resizing when a plot is embedded mid-run.
                 locked = getattr(self, '_locked_geometry', None)
                 if locked:
-                    try:
+                    with contextlib.suppress(tk.TclError):
                         self.geometry(locked)
-                    except tk.TclError:
-                        pass
             self._run_on_ui(_store)
         except Exception as e:
             self.append_status(f"Error storing plot: {str(e)}\n")

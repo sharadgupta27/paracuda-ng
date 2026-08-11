@@ -10,6 +10,7 @@ model is constructed.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 import numpy as np
 
 from models.model_training import create_model
@@ -199,10 +200,8 @@ def tune_hyperparameters(model_type, base_params, X_train, y_train,
     callbacks = []
     if progress_cb is not None:
         def _cb(study, trial):
-            try:
+            with contextlib.suppress(Exception):
                 progress_cb(trial.number + 1, n_trials)
-            except Exception:
-                pass
         callbacks.append(_cb)
 
     sampler = TPESampler(seed=random_state)

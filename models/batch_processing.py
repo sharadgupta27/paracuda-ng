@@ -3,6 +3,7 @@ Batch processing utilities for running multiple models and properties
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 import numpy as np
 import pandas as pd
 
@@ -172,23 +173,19 @@ def assess_overfitting(train_r2, test_r2, train_rmse=None, test_rmse=None, cv_r2
 
     # Corroborating measures raise severity to 'strong'.
     if cv_r2_mean is not None:
-        try:
+        with contextlib.suppress((TypeError, ValueError)):
             cv_gap = train_r2 - float(cv_r2_mean)
             if cv_gap > 0.15:
                 reasons.append(f"train−CV R² gap={cv_gap:.3f} (>0.15)")
                 severity = 'strong'
-        except (TypeError, ValueError):
-            pass
 
     if train_rmse is not None and test_rmse is not None:
-        try:
+        with contextlib.suppress((TypeError, ValueError)):
             train_rmse = float(train_rmse)
             test_rmse = float(test_rmse)
             if train_rmse > 1e-12 and test_rmse > 1.3 * train_rmse:
                 reasons.append(f"test RMSE={test_rmse:.3f} > 1.3× train RMSE={train_rmse:.3f}")
                 severity = 'strong'
-        except (TypeError, ValueError):
-            pass
 
     return {'flag': True, 'severity': severity, 'gap': gap, 'reasons': reasons}
 
@@ -330,13 +327,11 @@ def create_scatter_plot(y_true, y_pred, model_name, property_name, metrics, ax=N
     hi += pad
 
     ax.plot([lo, hi], [lo, hi], 'r--', lw=1.6, label='1:1 line', zorder=1)
-    try:
+    with contextlib.suppress(Exception):  # noqa: BLE001
         a, b = np.polyfit(y_true, y_pred, 1)
         xs = np.array([lo, hi])
         ax.plot(xs, a * xs + b, color='#1a9850', lw=1.6,
                 label=f"Fit: y = {a:.3f}x {b:+.3f}", zorder=2)
-    except Exception:  # noqa: BLE001
-        pass
 
     metric_rows = [f"R² = {metrics['r2']:.3f}", f"RMSE = {metrics['rmse']:.3f}"]
     text_handles = [Line2D([], [], linestyle='none', marker='', label=t)

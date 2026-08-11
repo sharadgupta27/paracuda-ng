@@ -9,6 +9,7 @@ doubles as a record of how a given model was built.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 import os
 import textwrap
 
@@ -348,10 +349,8 @@ class FlowChartMixin:
                     if not getattr(self, '_flow_suspend_trace', False):
                         self._flow_active_steps.add(_s)
                     self._schedule_flow_refresh()
-                try:
+                with contextlib.suppress(Exception):
                     var.trace_add("write", _cb)
-                except Exception:
-                    pass
         self._flow_live_wired = True
         # Reflow the compact strip when its docked pane is resized.
         holder = getattr(self, 'flow_preview_holder', None)
@@ -378,10 +377,8 @@ class FlowChartMixin:
             return
         job = getattr(self, '_flow_refresh_job', None)
         if job:
-            try:
+            with contextlib.suppress(Exception):
                 self.after_cancel(job)
-            except Exception:
-                pass
         try:
             self._flow_refresh_job = self.after(400, self._do_flow_refresh)
         except Exception:
@@ -400,27 +397,21 @@ class FlowChartMixin:
         # name ..._flow_poll") and spams the console at shutdown.
         if getattr(self, '_closing', False):
             return
-        try:
+        with contextlib.suppress(Exception):
             sig = self._flow_signature()
             if sig is not None and sig != getattr(self, '_flow_last_signature', None):
                 self._flow_last_signature = sig
                 self.refresh_flow_preview()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self._flow_poll_job = self.after(700, self._flow_poll)
-        except Exception:
-            pass
 
     def cancel_flow_jobs(self):
         """Cancel the pending flow-chart after-jobs (called on window close)."""
         for attr in ('_flow_poll_job', '_flow_refresh_job'):
             job = getattr(self, attr, None)
             if job:
-                try:
+                with contextlib.suppress(Exception):
                     self.after_cancel(job)
-                except Exception:
-                    pass
                 setattr(self, attr, None)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -464,10 +455,8 @@ class FlowChartMixin:
                     plt.close(old_fig)
                 return
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     canvas.get_tk_widget().destroy()
-                except Exception:
-                    pass
                 self.flow_preview_canvas = None
         self.flow_preview_canvas = FigureCanvasTkAgg(fig, holder)
         self.flow_preview_canvas.draw()
@@ -478,10 +467,8 @@ class FlowChartMixin:
         win = tk.Toplevel(self)
         win.title("Model Development Flow")
         win.geometry("640x900")
-        try:
+        with contextlib.suppress(Exception):
             win.configure(bg=self._c('WIN'))
-        except Exception:
-            pass
         fig = self.build_process_flow_figure(figsize=(6.2, 9.2), dpi=110)
         canvas = FigureCanvasTkAgg(fig, win)
         canvas.draw()

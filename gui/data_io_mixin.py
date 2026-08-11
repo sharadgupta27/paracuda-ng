@@ -3,6 +3,7 @@ Loading/saving Excel, models, images, predictions and missing-data handling.
 
 @author: Sharad Kumar Gupta
 """
+import contextlib
 from gui._deps import *  # noqa: F401,F403 - reproduce original module namespace
 
 
@@ -62,11 +63,9 @@ class DataIOMixin:
 
     def _reset_load_progress(self):
         """Put the progress bar back to its idle 0% state after a load."""
-        try:
+        with contextlib.suppress(Exception):  # noqa: BLE001 - cosmetic only
             self.progress_var.set(0)
             self.progress_label.config(text="0%")
-        except Exception:  # noqa: BLE001 - cosmetic only
-            pass
 
     def load_excel(self):
         try:

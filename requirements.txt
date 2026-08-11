@@ -16,6 +16,9 @@ pillow
 openpyxl
 xlrd
 odfpy
+# Hardened XML parser for workbook internals.  The converter's fast .xlsx
+# reader only runs when this is present; without it pandas reads the file.
+defusedxml
 
 # Optional accelerator - not required.  The Rust .xlsx reader behind
 # python-calamine parses a large spectral workbook several times faster than
