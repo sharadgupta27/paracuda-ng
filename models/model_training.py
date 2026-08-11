@@ -326,5 +326,5 @@ def parse_parameter_value(param_name, param_value, param_type):
             return param_value
         else:
             return param_value
-    except:
+    except Exception:
         return param_value

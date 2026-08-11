@@ -61,7 +61,7 @@ def get_search_space(model_type, n_features, n_samples):
     ``n_samples`` bound data-dependent ranges (e.g. PLS components).
     """
     F = optuna.distributions.FloatDistribution
-    I = optuna.distributions.IntDistribution
+    Int = optuna.distributions.IntDistribution
     C = optuna.distributions.CategoricalDistribution
 
     if model_type == "PLS-R":
@@ -69,7 +69,7 @@ def get_search_space(model_type, n_features, n_samples):
         hi = int(min(30, n_features, max(2, n_samples - 1)))
         if hi < 2:
             return {}
-        return {"n_components": I(2, hi)}
+        return {"n_components": Int(2, hi)}
 
     if model_type == "Ridge":
         return {"alpha": F(1e-2, 1e3, log=True)}
@@ -87,24 +87,24 @@ def get_search_space(model_type, n_features, n_samples):
 
     if model_type == "Gradient Boosting":
         return {"learning_rate": F(0.02, 0.3, log=True),
-                "n_estimators": I(50, 300, step=25),
-                "max_depth": I(2, 6),
-                "min_samples_split": I(2, 20),
-                "min_samples_leaf": I(1, 20),
+                "n_estimators": Int(50, 300, step=25),
+                "max_depth": Int(2, 6),
+                "min_samples_split": Int(2, 20),
+                "min_samples_leaf": Int(1, 20),
                 "subsample": F(0.5, 1.0, step=0.1)}
 
     if model_type == "Random Forest":
-        return {"n_estimators": I(100, 400, step=50),
-                "max_depth": I(3, 20),
-                "min_samples_split": I(2, 10),
-                "min_samples_leaf": I(1, 6),
+        return {"n_estimators": Int(100, 400, step=50),
+                "max_depth": Int(3, 20),
+                "min_samples_split": Int(2, 10),
+                "min_samples_leaf": Int(1, 6),
                 "max_features": C([None, "sqrt", "log2"]),
                 "bootstrap": C([True, False])}
 
     if model_type == "Gaussian Process":
         return {"alpha": F(1e-8, 1e-1, log=True),
                 "length_scale": F(1e-1, 1e2, log=True),
-                "n_restarts_optimizer": I(0, 5)}
+                "n_restarts_optimizer": Int(0, 5)}
 
     if model_type == "SVM":
         return {"C": F(1e-2, 1e2, log=True),
@@ -112,8 +112,8 @@ def get_search_space(model_type, n_features, n_samples):
                 "gamma": C(["scale", "auto"])}
 
     if model_type == "XGBoost":
-        return {"n_estimators": I(50, 300, step=25),
-                "max_depth": I(2, 6),
+        return {"n_estimators": Int(50, 300, step=25),
+                "max_depth": Int(2, 6),
                 "learning_rate": F(0.02, 0.3, log=True),
                 "subsample": F(0.6, 1.0, step=0.1),
                 "colsample_bytree": F(0.6, 1.0, step=0.1),
